@@ -43,21 +43,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
 
     ui.add_space(8.0);
 
-    // ── Video CRF ───────────────────────────────────────
-    let crf = app.settings.video_crf;
+    // ── Video Quality ─────────────────────────────────────
+    let qual = app.settings.video_quality;
     slider_row(
         ui,
         "Video Quality",
-        &mut app.settings.video_crf,
+        &mut app.settings.video_quality,
         0..=51,
-        crf,
+        qual,
     );
-    // Show CRF label below
+    // Show quality label below
     ui.add_space(-4.0);
     ui.horizontal(|ui| {
         ui.add_space(110.0); // indent to match slider position
         ui.label(
-            egui::RichText::new(crf_quality(crf))
+            egui::RichText::new(video_quality_label(qual))
                 .color(TEXT_SECONDARY)
                 .size(11.0),
         );
@@ -243,13 +243,13 @@ fn link_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
         .inner
 }
 
-fn crf_quality(crf: u8) -> &'static str {
-    match crf {
-        0..=17 => "Very high quality, larger file",
-        18..=23 => "High quality",
-        24..=28 => "Balanced",
-        29..=35 => "Lower quality, smaller file",
-        36..=51 => "Very low quality",
+fn video_quality_label(quality: u8) -> &'static str {
+    match quality {
+        0..=9 => "Very low quality, smallest file",
+        10..=17 => "Low quality",
+        18..=23 => "Balanced",
+        24..=33 => "High quality",
+        34..=51 => "Very high quality, largest file",
         _ => "",
     }
 }

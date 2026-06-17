@@ -103,10 +103,9 @@ impl MediaInfo {
             MediaType::Png => 0.85, // oxipng typically saves 10-20%
             MediaType::Gif => 0.45, // palette + frame drop can be aggressive
             MediaType::Video => {
-                // CRF-based: lower CRF = bigger file
-                let crf = settings.video_crf as f64;
-                let ratio = 0.1 + (crf / 51.0) * 0.6; // CRF 28 -> ~43%
-                ratio
+                // Quality-based: higher quality → larger file
+                let q = settings.video_quality as f64;
+                0.08 + (q / 51.0) * 0.65 // quality 23(CRF28) -> ~37%
             }
             MediaType::Other => 1.0,
         };
@@ -119,8 +118,8 @@ impl MediaInfo {
 pub struct CompressionSettings {
     /// JPEG quality (1–100, higher = better)
     pub image_quality: u8,
-    /// Video CRF (0–51, lower = better)
-    pub video_crf: u8,
+    /// Video quality (0–51, higher = better, maps to CRF 51-quality)
+    pub video_quality: u8,
     /// GIF palette optimization
     pub gif_palette_optimize: bool,
     /// GIF frame drop
@@ -141,7 +140,7 @@ impl Default for CompressionSettings {
     fn default() -> Self {
         Self {
             image_quality: 75,
-            video_crf: 28,
+            video_quality: 23, // balanced (maps to CRF 28)
             gif_palette_optimize: true,
             gif_frame_drop: true,
             gif_target_fps: 15,
@@ -157,19 +156,19 @@ impl CompressionSettings {
     /// Apply "High quality" preset.
     pub fn preset_high(&mut self) {
         self.image_quality = 90;
-        self.video_crf = 18;
+        self.video_quality = 33; // maps to CRF 18
     }
 
     /// Apply "Medium quality" preset.
     pub fn preset_medium(&mut self) {
         self.image_quality = 75;
-        self.video_crf = 28;
+        self.video_quality = 23; // maps to CRF 28
     }
 
     /// Apply "Low quality" preset.
     pub fn preset_low(&mut self) {
         self.image_quality = 30;
-        self.video_crf = 42;
+        self.video_quality = 9; // maps to CRF 42
         self.image_max_width_enabled = true;
         self.image_max_width = 1024;
         self.video_max_resolution_enabled = true;
