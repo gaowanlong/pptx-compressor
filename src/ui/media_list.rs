@@ -48,13 +48,22 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
 
     // ── Summary bar ────────────────────────────────────
     let total_original: u64 = app.media_files.iter().map(|m| m.original_size).sum();
-    let estimated_total: u64 = app
+
+    // Use actual compressed size for processed files, estimate for pending ones.
+    let has_actual = app.media_files.iter().any(|m| {
+        matches!(m.status, MediaStatus::Done | MediaStatus::Skipped | MediaStatus::Failed)
+    });
+    let display_total: u64 = app
         .media_files
         .iter()
-        .map(|m| m.estimated_size(&app.settings))
+        .map(|m| match m.status {
+            MediaStatus::Done if m.compressed_size > 0 => m.compressed_size,
+            MediaStatus::Skipped | MediaStatus::Failed => m.original_size,
+            _ => m.estimated_size(&app.settings),
+        })
         .sum();
     let savings = if total_original > 0 {
-        ((1.0 - estimated_total as f64 / total_original as f64) * 100.0) as u8
+        ((1.0 - display_total as f64 / total_original as f64) * 100.0) as u8
     } else {
         0
     };
@@ -78,20 +87,42 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
                         .size(12.0),
                 );
                 ui.separator();
-                ui.label(
-                    egui::RichText::new(format!("→ estimated {}", bytesize::ByteSize(estimated_total)))
-                        .color(BLUE)
-                        .size(12.0)
-                        .strong(),
-                );
+                if has_actual {
+                    ui.label(
+                        egui::RichText::new(format!("→ {}", bytesize::ByteSize(display_total)))
+                            .color(BLUE)
+                            .size(12.0)
+                            .strong(),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new(format!("→ estimated {}", bytesize::ByteSize(display_total)))
+                            .color(BLUE)
+                            .size(12.0)
+                            .strong(),
+                    );
+                }
                 ui.separator();
-                let savings_color = if savings >= 30 { GREEN } else if savings > 0 { BLUE } else { ORANGE };
-                ui.label(
-                    egui::RichText::new(format!("save~{}%", savings))
-                        .color(savings_color)
-                        .size(12.0)
-                        .strong(),
-                );
+                let savings_color = match savings {
+                    s if s >= 30 => GREEN,
+                    s if s > 0 => BLUE,
+                    _ => ORANGE,
+                };
+                if has_actual {
+                    ui.label(
+                        egui::RichText::new(format!("save {}%", savings))
+                            .color(savings_color)
+                            .size(12.0)
+                            .strong(),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new(format!("save~{}%", savings))
+                            .color(savings_color)
+                            .size(12.0)
+                            .strong(),
+                    );
+                }
             });
         });
     let _ = summary;
