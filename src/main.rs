@@ -3,6 +3,9 @@
 //! Loads the app icon from embedded assets, configures Chinese font support,
 //! and applies an Apple-native glassmorphism theme with blue primary color.
 
+// Hide the console window on Windows (GUI-only application).
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod app;
 mod core;
 mod handlers;
@@ -134,12 +137,36 @@ fn setup_glass_theme(ctx: &egui::Context) {
 }
 
 /// Add a Chinese font to egui's font list for CJK rendering.
+///
+/// Platform-specific font paths:
+/// - macOS: STHeiti (苹方) / Songti (宋体)
+/// - Windows: Microsoft YaHei (微软雅黑)
+/// - Linux: Noto Sans CJK / WenQuanYi Micro Hei
 fn setup_chinese_font(ctx: &egui::Context) {
-    let font_candidates = [
+    #[cfg(target_os = "macos")]
+    let font_candidates: &[&str] = &[
+        "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/STHeiti Light.ttc",
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/Songti.ttc",
         "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+    ];
+
+    #[cfg(target_os = "windows")]
+    let font_candidates: &[&str] = &[
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\msyhbd.ttc",
+        "C:\\Windows\\Fonts\\simsun.ttc",
+        "C:\\Windows\\Fonts\\simfang.ttf",
+        "C:\\Windows\\Fonts\\SIMLI.TTF",
+    ];
+
+    #[cfg(target_os = "linux")]
+    let font_candidates: &[&str] = &[
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
     ];
 
     let font_data = font_candidates
