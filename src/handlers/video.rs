@@ -27,8 +27,9 @@ pub fn compress_video(path: &Path, settings: &CompressionSettings) -> Result<(),
 
     let tmp_path = path.with_extension("tmp.mp4");
 
-    // video_quality is 0-51 (higher = better). Convert to CRF for FFmpeg.
-    let crf = 51 - settings.video_quality.min(51);
+    // video_quality is 0-100 (higher = better). Convert to CRF for FFmpeg.
+    // quality 0 → CRF 51 (worst), quality 100 → CRF 0 (best/lossless).
+    let crf = 51 - (settings.video_quality as u32 * 51 / 100).min(51) as u8;
 
     let mut args: Vec<String> = vec![
         "-y".into(),                  // Overwrite without asking

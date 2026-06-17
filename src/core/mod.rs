@@ -89,23 +89,50 @@ impl MediaInfo {
         }
     }
 
-    /// Estimated compressed size (rough heuristic for preview).
+    /// Estimated compressed size based on settings heuristics.
+    ///
+    /// For JPEG/PNG: accounts for quality and optional max-width resize.
+    /// For GIF: accounts for palette optimization and frame drop settings.
+    /// For Video: accounts for quality (0-100 → CRF) and optional resolution limit.
     pub fn estimated_size(&self, settings: &CompressionSettings) -> u64 {
         if !self.enabled {
             return self.original_size;
         }
         let ratio = match self.media_type {
             MediaType::Jpeg => {
-                // JPEG: quality-based ratio
                 let q = settings.image_quality as f64 / 100.0;
-                0.15 + 0.55 * q // quality 75 -> ~56% ratio
+                let mut r = 0.15 + 0.55 * q; // quality 75 -> ~56% ratio
+                // Max-width resize: scaled-down images are significantly smaller
+                if settings.image_max_width_enabled {
+                    r *= 0.75;
+                }
+                r
             }
-            MediaType::Png => 0.85, // oxipng typically saves 10-20%
-            MediaType::Gif => 0.45, // palette + frame drop can be aggressive
+            MediaType::Png => {
+                // Recompression alone saves ~12%; with resize can save ~45%
+                if settings.image_max_width_enabled {
+                    0.55
+                } else {
+                    0.88
+                }
+            }
+            MediaType::Gif => {
+                // Settings-aware: palette and frame drop each contribute
+                match (settings.gif_palette_optimize, settings.gif_frame_drop) {
+                    (true, true) => 0.40,
+                    (true, false) => 0.50,
+                    (false, true) => 0.55,
+                    (false, false) => 0.65,
+                }
+            }
             MediaType::Video => {
-                // Quality-based: higher quality → larger file
-                let q = settings.video_quality as f64;
-                0.08 + (q / 51.0) * 0.65 // quality 23(CRF28) -> ~37%
+                let q = settings.video_quality as f64 / 100.0;
+                let mut r = 0.08 + q * 0.65; // quality 45 -> ~37% (CRF 28)
+                // Resolution limit reduces data, especially for high-res videos
+                if settings.video_max_resolution_enabled {
+                    r *= 0.7;
+                }
+                r
             }
             MediaType::Other => 1.0,
         };
@@ -118,7 +145,7 @@ impl MediaInfo {
 pub struct CompressionSettings {
     /// JPEG quality (1–100, higher = better)
     pub image_quality: u8,
-    /// Video quality (0–51, higher = better, maps to CRF 51-quality)
+    /// Video quality (0–100, higher = better, maps to CRF 51 - quality*51/100)
     pub video_quality: u8,
     /// GIF palette optimization
     pub gif_palette_optimize: bool,
@@ -140,7 +167,7 @@ impl Default for CompressionSettings {
     fn default() -> Self {
         Self {
             image_quality: 75,
-            video_quality: 23, // balanced (maps to CRF 28)
+            video_quality: 45, // balanced (maps to CRF 28)
             gif_palette_optimize: true,
             gif_frame_drop: true,
             gif_target_fps: 15,
@@ -156,7 +183,7 @@ impl CompressionSettings {
     /// Apply "High quality" preset.
     pub fn preset_high(&mut self) {
         self.image_quality = 90;
-        self.video_quality = 33; // maps to CRF 18
+        self.video_quality = 65; // maps to CRF 18
     }
 
     /// Apply "Medium quality" preset.
@@ -168,7 +195,7 @@ impl CompressionSettings {
     /// Apply "Low quality" preset.
     pub fn preset_low(&mut self) {
         self.image_quality = 30;
-        self.video_quality = 9; // maps to CRF 42
+        self.video_quality = 18; // maps to CRF 42
         self.image_max_width_enabled = true;
         self.image_max_width = 1024;
         self.video_max_resolution_enabled = true;

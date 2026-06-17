@@ -37,7 +37,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
         ui,
         "Image Quality",
         &mut app.settings.image_quality,
-        10..=100,
+        0..=100,
         img_quality,
     );
 
@@ -49,7 +49,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
         ui,
         "Video Quality",
         &mut app.settings.video_quality,
-        0..=51,
+        0..=100,
         qual,
     );
     // Show quality label below
@@ -245,11 +245,11 @@ fn link_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 
 fn video_quality_label(quality: u8) -> &'static str {
     match quality {
-        0..=9 => "Very low quality, smallest file",
-        10..=17 => "Low quality",
-        18..=23 => "Balanced",
-        24..=33 => "High quality",
-        34..=51 => "Very high quality, largest file",
+        0..=20 => "Very low quality, smallest file",
+        21..=40 => "Low quality",
+        41..=60 => "Balanced",
+        61..=80 => "High quality",
+        81..=100 => "Very high quality, largest file",
         _ => "",
     }
 }
