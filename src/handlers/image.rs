@@ -45,13 +45,26 @@ pub fn compress_jpeg(path: &Path, settings: &CompressionSettings) -> Result<(), 
 }
 
 /// Compress a PNG file by re-encoding with maximum compression.
+/// Optionally resizes if the image exceeds the configured max width.
 /// Uses the `image` crate's PNG encoder with Best compression and Adaptive filtering.
 /// Falls back to keeping the original if re-encoding does not reduce file size.
-pub fn compress_png(path: &Path, _settings: &CompressionSettings) -> Result<(), String> {
+pub fn compress_png(path: &Path, settings: &CompressionSettings) -> Result<(), String> {
     use image::codecs::png::{CompressionType, FilterType, PngEncoder};
     use image::ImageEncoder as _;
 
     let img = image::open(path).map_err(|e| format!("Failed to open PNG {}: {}", path.display(), e))?;
+
+    let img = if settings.image_max_width_enabled && img.width() > settings.image_max_width {
+        let ratio = settings.image_max_width as f64 / img.width() as f64;
+        let new_height = (img.height() as f64 * ratio) as u32;
+        img.resize_exact(
+            settings.image_max_width,
+            new_height,
+            image::imageops::FilterType::Lanczos3,
+        )
+    } else {
+        img
+    };
 
     let mut buffer = std::io::Cursor::new(Vec::new());
     let encoder = PngEncoder::new_with_quality(&mut buffer, CompressionType::Best, FilterType::Adaptive);

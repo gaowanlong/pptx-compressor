@@ -115,6 +115,9 @@ pub fn run_pipeline(
     // Clean XML files (strip comments)
     xml_clean::clean_xml_files(extract_dir);
 
+    // Strip preview thumbnails (docProps/thumbnail.*)
+    crate::core::extractor::strip_thumbnails(extract_dir);
+
     // Repack into PPTX
     let _ = tx.send(CompressMessage::Progress(
         total,

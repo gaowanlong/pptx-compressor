@@ -168,8 +168,12 @@ impl CompressionSettings {
 
     /// Apply "Low quality" preset.
     pub fn preset_low(&mut self) {
-        self.image_quality = 50;
-        self.video_crf = 35;
+        self.image_quality = 30;
+        self.video_crf = 42;
+        self.image_max_width_enabled = true;
+        self.image_max_width = 1024;
+        self.video_max_resolution_enabled = true;
+        self.video_max_height = 720;
     }
 }
 

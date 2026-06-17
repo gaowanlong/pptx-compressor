@@ -3,9 +3,40 @@
 use crate::core::MediaInfo;
 use std::fs;
 use std::io::{self};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use zip::write::SimpleFileOptions;
 use zip::ZipArchive;
+
+/// Safely resolve a ZIP entry path, trying UTF-8 on raw bytes first.
+///
+/// ZIP entries without the UTF-8 flag (bit 11) get decoded as CP-437
+/// by the `zip` crate, which garbles Chinese characters. We try UTF-8 on
+/// the raw bytes first and fall back to the crate's decoded name.
+fn resolve_entry_path(entry: &zip::read::ZipFile) -> Option<PathBuf> {
+    // Try UTF-8 on raw bytes first (handles Chinese chars even without UTF-8 flag)
+    let raw = entry.name_raw();
+    let name = String::from_utf8(raw.to_vec())
+        .ok()
+        .unwrap_or_else(|| entry.name().to_string());
+
+    // Reject null bytes
+    if name.contains('\0') {
+        return None;
+    }
+
+    // Path sanitization (mirrors zip crate's enclosed_name logic)
+    let path = PathBuf::from(&name);
+    let mut depth = 0usize;
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => return None,
+            Component::ParentDir => depth = depth.checked_sub(1)?,
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => (),
+        }
+    }
+    Some(path)
+}
 
 /// Extract a PPTX (ZIP) file into a temporary directory.
 /// Returns the list of discovered media files.
@@ -19,17 +50,20 @@ pub fn extract_pptx(pptx_path: &Path, extract_dir: &Path) -> io::Result<Vec<Medi
             .by_index(i)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        // Use enclosed_name for safe path extraction; fall back to name()
-        let out_path = if let Some(safe) = entry.enclosed_name() {
-            extract_dir.join(safe)
-        } else {
-            let name = entry.name().to_string();
-            // Skip entries with suspicious paths
-            if name.contains("..") {
-                continue;
-            }
-            extract_dir.join(&name)
-        };
+        let out_path = resolve_entry_path(&entry)
+            .map(|p| extract_dir.join(p))
+            .unwrap_or_else(|| {
+                // Fallback: use zip crate's name() with basic safety
+                let name = entry.name().to_string();
+                if name.contains("..") || name.contains('\0') {
+                    return PathBuf::new();
+                }
+                extract_dir.join(name.trim_start_matches('/'))
+            });
+
+        if out_path.as_os_str().is_empty() {
+            continue; // skip dangerous entries
+        }
 
         if entry.is_dir() {
             fs::create_dir_all(&out_path)?;
@@ -167,6 +201,31 @@ pub fn repack_pptx(extract_dir: &Path, output_path: &Path) -> io::Result<()> {
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
     Ok(())
+}
+
+/// Strip preview thumbnail files from the extracted PPTX directory.
+/// Thumbnails in `docProps/thumbnail.*` are slide preview images generated
+/// by PowerPoint and can be several MB. Removing them is safe — PowerPoint
+/// will regenerate them when the file is opened and saved.
+pub fn strip_thumbnails(extract_dir: &Path) {
+    let thumb_dir = extract_dir.join("docProps");
+    if !thumb_dir.exists() {
+        return;
+    }
+    if let Ok(entries) = fs::read_dir(&thumb_dir) {
+        for entry in entries.flatten() {
+            let name = entry
+                .file_name()
+                .to_string_lossy()
+                .to_lowercase();
+            if name.starts_with("thumbnail") {
+                let path = entry.path();
+                if path.is_file() {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+        }
+    }
 }
 
 /// Check if a file is an already-compressed format (don't deflate again).
