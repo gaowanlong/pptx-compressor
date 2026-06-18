@@ -65,6 +65,28 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
 
     ui.add_space(12.0);
 
+    // ── Video H.264 conversion toggle ─────────────────────
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Video")
+                .color(TEXT_PRIMARY)
+                .size(13.0)
+                .strong(),
+        );
+        ui.add_space(8.0);
+        if glass_toggle(ui, "H.264", app.settings.video_convert_to_h264).clicked() {
+            app.settings.video_convert_to_h264 = !app.settings.video_convert_to_h264;
+        }
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("Convert to H.264 for compatibility")
+                .color(TEXT_SECONDARY)
+                .size(11.0),
+        );
+    });
+
+    ui.add_space(12.0);
+
     // ── GIF settings ────────────────────────────────────
     ui.horizontal(|ui| {
         ui.label(

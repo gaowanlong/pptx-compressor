@@ -1,6 +1,6 @@
 //! Compression pipeline: orchestrates media compression and PPTX repacking.
 
-use crate::core::{CompressMessage, CompressionSettings, MediaInfo, MediaStatus};
+use crate::core::{CompressMessage, CompressionSettings, MediaInfo, MediaStatus, MediaType};
 use crate::handlers::{gif_handler, image, video, xml_clean};
 use std::path::Path;
 use std::sync::mpsc::Sender;
@@ -26,7 +26,14 @@ pub fn run_pipeline(
     let compressible: Vec<usize> = media_files
         .iter()
         .enumerate()
-        .filter(|(_, m)| m.enabled && m.media_type.is_compressible())
+        .filter(|(_, m)| {
+            // When H.264 conversion is enabled, include all videos
+            // regardless of individual compress checkbox
+            if settings.video_convert_to_h264 && m.media_type == MediaType::Video {
+                return true;
+            }
+            m.enabled && m.media_type.is_compressible()
+        })
         .map(|(i, _)| i)
         .collect();
 

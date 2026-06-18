@@ -161,6 +161,8 @@ pub struct CompressionSettings {
     pub video_max_resolution_enabled: bool,
     /// Max video height in pixels (e.g. 1080)
     pub video_max_height: u32,
+    /// Convert all videos to H.264 for cross-platform compatibility
+    pub video_convert_to_h264: bool,
 }
 
 impl Default for CompressionSettings {
@@ -175,6 +177,7 @@ impl Default for CompressionSettings {
             image_max_width: 1920,
             video_max_resolution_enabled: false,
             video_max_height: 1080,
+            video_convert_to_h264: true,
         }
     }
 }
