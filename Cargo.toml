@@ -1,6 +1,6 @@
 [package]
 name = "pptx-compressor"
-version = "0.1.1"
+version = "1.0.0"
 edition = "2021"
 description = "A GUI tool to compress PPTX file size by recompressing embedded images, videos and GIFs"
 
