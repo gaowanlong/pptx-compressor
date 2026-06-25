@@ -1,8 +1,11 @@
 # PPTX Compressor
 
+![Version](https://img.shields.io/badge/version-v1.0.0-blue.svg)
+![macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)
+![Windows](https://img.shields.io/badge/platform-Windows-0078d7.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-一个跨平台的 PowerPoint（PPTX）文件压缩工具，通过重新压缩内嵌的图片、GIF 和视频来减小文件大小。提供 macOS 原生 .app 和 Windows 原生 exe。
+一个跨平台的 PowerPoint（PPTX）文件压缩工具，通过重新压缩内嵌的图片、GIF 和视频来大幅减小文件大小。提供 macOS 原生 .app 和 Windows 原生 exe。
 
 ## 功能
 
@@ -14,8 +17,9 @@
   - H.264 编码，可调画质（0-100，统一滑块逻辑）
   - 可选分辨率缩放
   - H.264 格式转换开关，提升跨平台兼容性
+  - 自动转换 yuv420p + High Profile Level 4.0，确保全平台播放兼容
   - 静态打包的 FFmpeg，无需额外下载
-- **XML 优化**：清理 PPTX 内 XML 注释和多余空白
+- **XML 优化**：清理 PPTX 内 XML 注释和多余空白，剥离 docProps/thumbnail.* 预览图
 - **实时预估**：调整参数时即时显示预估压缩率，压缩完成后展示实际结果
 - **Apple HIG 风格界面**
   - 毛玻璃卡片设计
