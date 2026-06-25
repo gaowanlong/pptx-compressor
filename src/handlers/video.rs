@@ -41,6 +41,12 @@ pub fn compress_video(path: &Path, settings: &CompressionSettings) -> Result<(),
         crf.to_string(),
         "-preset".into(),
         "medium".into(),
+        "-profile:v".into(),
+        "high".into(),
+        "-level:v".into(),
+        "4.0".into(),
+        "-refs".into(),
+        "3".into(),
         "-c:a".into(),
         "aac".into(),
         "-b:a".into(),
@@ -49,15 +55,18 @@ pub fn compress_video(path: &Path, settings: &CompressionSettings) -> Result<(),
         "+faststart".into(),
     ];
 
-    // Add resolution scaling if enabled
+    // Add resolution scaling + pixel format fix for PPT compatibility
     if settings.video_max_resolution_enabled {
-        // scale=-2:'min(ih,MAX_HEIGHT)' ensures width is even and height ≤ max
         let filter = format!(
-            "scale=-2:'min(ih,{})'",
+            "scale=-2:'min(ih,{})',format=yuv420p",
             settings.video_max_height
         );
         args.push("-vf".into());
         args.push(filter);
+    } else {
+        // Force yuv420p pixel format for maximum PowerPoint compatibility
+        args.push("-pix_fmt".into());
+        args.push("yuv420p".into());
     }
 
     args.push(tmp_path.to_string_lossy().into_owned());
