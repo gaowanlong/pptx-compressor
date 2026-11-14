@@ -6,6 +6,7 @@ use std::path::PathBuf;
 pub mod batch;
 pub mod extractor;
 pub mod inspection;
+pub mod ooxml;
 pub mod pipeline;
 pub mod queue;
 

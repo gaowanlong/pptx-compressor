@@ -2,6 +2,72 @@
 
 本项目所有值得注意的变更都记录在这里，版本号遵循语义化版本。Release 说明直接取自对应章节。
 
+## [v1.2.4] - 2026-11-15
+
+OOXML 引用完整性版。此前媒体改名只做「全局子串替换」，`clip.mov` 会误伤 `clip.mov.bak` / `image10.mov`；`[Content_Types].xml` 又硬编码 `/ppt/media/` 前缀，notesSlides、slideLayouts / masters、handoutMaster、theme 以及自定义目录下的媒体引用一律漏更新；删除媒体或缩略图后残留的悬空关系与失效内容类型声明，会让 PowerPoint 提示「需要修复」。同时，放在 `ppt/media/` 之外的媒体此前根本不参与压缩，重打包时还会被二次 deflate。本版把引用同步改成基于 OPC 关系模型的精确改写，并在打包前清理所有指向不存在部件的引用。纯补丁版本，无新依赖、无 UI 结构变化、无配置格式变化、无破坏性变更。
+
+### 本轮主题选型说明
+
+去重结果：待办第 3 项「输入安全检测」已在 v1.2.1、第 1 项「批量队列」已在 v1.2.2、第 2 项「元数据保真」已在 v1.2.3 完成，三个 tag 均存在。因此本轮取最高优先级的未完成项——第 4 项「OOXML 引用完整性」。这也正好闭环了 v1.2.2 / v1.2.3 两版「已知限制」里连续出现的同一句话：*「OOXML 引用同步目前只覆盖 `ppt/media` 下的媒体改名与缩略图清理，notesSlides / masters / handoutMaster 等引用尚未专项覆盖」*。相比体积预估、CLI、CI 等增强项，这是**输出正确性**问题，优先级更高。
+
+为保证一轮内可完成、可验证，范围收敛为「引用精确定位 + 全包悬空关系清理 + 让非 `ppt/media` 媒体参与压缩」，没有叠加体积预估（待办 5）、无头 CLI（待办 6）、GitHub Actions CI（待办 7）等其余待办。版本按 patch 递增为 v1.2.4：用户无感知、偏好文件格式不变、单文件路径行为不变、无破坏性变更。
+
+### 新增
+
+- 新模块 `src/core/ooxml.rs`：**基于 OPC 关系模型的引用完整性维护**，主体是可独立测试的纯函数，只做带边界检查的字节扫描、不整体重写 XML。OOXML 的 `.rels` 与 `[Content_Types].xml` 由工具生成、结构受限，逐标签定位属性能原样保留命名空间、属性顺序与空白，无需引入 XML 解析依赖；畸形输入一律「跳过该标签」而不是改写整份文档。
+  - `rewrite_rels_targets`：逐个 `<Relationship>` 解析 `Target`，按**文件名部分全等**匹配替换，保留 `../media/`、`/ppt/notesSlides/media/`、`media/` 等任意相对 / 绝对前缀；兼容单引号属性、`#fragment` 与反斜杠路径；`TargetMode="External"` 与绝对 URL 一律跳过。`RewriteReport` 返回改写数量。
+  - `rewrite_content_types`：`<Override>` 的 `PartName` 同样按 basename 匹配，**不再假设 `/ppt/media/` 前缀**，并按新扩展修正 `ContentType`；缺失的 `<Default Extension=.../>` 自动补齐（即使包里只有 Default、没有任何 Override 也会补），按扩展去重且插在 `<Types …>` 开标签之内而非 XML 声明的 `?>` 之后。
+  - `content_type_for_ext`：常见图片 / 视频 / 音频扩展的内容类型映射表；**未知扩展保留原声明、不猜测**，避免写入错误类型。
+  - `resolve_relationship_path`：按 OPC 规则把 `Target` 解析成包内路径——`<part_dir>/_rels/<name>.rels` 相对 `<part_dir>`、根 `_rels/.rels` 相对包根、绝对 `/…` 相对包根；支持 `..` 词法规范化、`%20` 等百分号解码与 `#fragment` 剥离；外部链接与会逃出解压目录的路径返回 `None`，调用方保守保留。
+  - `prune_dangling_relationships`：**遍历整个包**的 `.rels`（notesSlides / slideLayouts / slideMasters / handoutMasters / theme / 自定义目录全覆盖），只删除目标部件确实不存在的内部关系，并清理 `[Content_Types].xml` 里指向不存在部件的 `<Override>`；返回 `PruneReport`（扫描数、删除数、明细）供活动日志使用，具备幂等性。
+- `src/core/extractor.rs`：
+  - `rewrite_media_references` 改为调用 `core::ooxml`，删除旧的 `replace_content_type` / `fix_content_type`（硬编码 `/ppt/media/` 且一律写 `video/mp4`）与全局 `String::replace`。非 UTF-8 的 XML 部件跳过改写而不是让整条流水线失败。
+  - `scan_media` 扩展为扫描 `ppt/` 树**其余目录**中的可压缩媒体（`ppt/notesSlides/media/`、`ppt/slideLayouts/media/`、自定义路径等）并去重；`ppt/media/` 下全部文件仍原样保留（含不可压缩的 Other，供界面展示），`_rels` 关系目录与 `docProps` 缩略图不会误纳入。
+  - `repack_pptx` 的「已压缩媒体用 Stored」判断从路径前缀 `ppt/media/` 改为**按扩展名**：放在其他 part 目录下的媒体不再被二次 deflate。
+- `src/core/pipeline.rs`：重打包前调用 `prune_dangling_relationships` 做收尾，清理结果以「引用完整性：已清理 N 条悬空关系、M 条失效内容类型声明（非致命）」写入活动日志；体检本身失败只记一条非致命日志，**绝不因为体检没做成而阻断已经压好的包**。
+
+### 设计取舍
+
+- **basename 精确匹配，不做全局子串替换**：旧实现 `updated.replace(old, new)` 会把 `image1.mov` 改成 `image10.mov` 里的子串、把 `clip.mov.bak` 改坏，也可能碰巧改到属性或 Id 里的同名文字。新实现只在 `Target` / `PartName` 的文件名部分做全等替换，前缀与其余属性字节原样保留。
+- **保守清理优于激进修复**：只删「目标部件确实不存在」的内部关系；`TargetMode="External"`、绝对 URL、`mailto:`、盘符 / UNC、会逃出解压目录的 `../..`、纯 `#fragment`、非 UTF-8 的 `.rels` 全部保留。只要部件存在（或无法安全判断），对应的 `rId` 就原样不动，因此不会破坏任何有效引用。
+- **不删「多余但合法」的 `<Default>`**：改名后旧的 `Default Extension="wmv"` 仍留在 CT 里。OOXML 允许声明未被使用的扩展，删它要额外扫描全包扩展名、收益低且有误删风险，本版保留。
+- **保留 `strip_thumbnails` 独立逻辑**：它已精确处理根 `.rels` 与 CT 的缩略图引用；`prune` 作为兜底，覆盖「缩略图以外」以及 `strip_thumbnails` 没照顾到的其他 `.rels`，两者职责不重叠。
+- **扫描范围扩大但单文件行为不变**：`ppt/media/` 的扫描结果、UI 媒体清单、用户已有偏好、单文件压缩流程全部沿用原逻辑；新增项只是「原来根本看不见的媒体」。既有 84 项测试零改动全部通过，回归面收敛到新增代码。
+- **悬空清理放在打包前最后一步**：此时媒体替换、缩略图剥离、XML 注释清理都已完成，判定「部件是否存在」的结论才是最终状态；放在更早会因为后续删除产生新的悬空关系。
+- **版本定为 patch**：无新依赖、无 UI 结构变化、无配置格式变化、无破坏性变更；引用同步对用户完全无感知，只是输出包更可靠。
+
+### 修复
+
+- 修正媒体改名时 `.rels` 全局子串替换误伤相似文件名（`clip.mov` ↔ `image10.mov`、`clip.mov.bak`）。
+- 修正 `[Content_Types].xml` 只认 `/ppt/media/` 前缀，导致其他路径的 `<Override>` 的 PartName 与 ContentType 都不更新。
+- 修正 notesSlides / slideLayouts / slideMasters / handoutMasters / theme 以及自定义 part 目录下的媒体引用漏同步。
+- 修正删除媒体或缩略图后残留的悬空 `.rels` 关系与失效 `<Override>`，避免 PowerPoint 提示「需要修复」。
+- 修正放在 `ppt/media/` 之外的媒体完全不参与压缩、且重打包时被二次 deflate（现在按扩展名统一 Stored）。
+- 修正视频改名后若源包只用 `<Default Extension="mov">` 声明、没有 Override 时，新的 MP4 内容类型声明可能缺失的问题。
+
+### 测试
+
+- 新增 `tests/ooxml_tests.rs` **13 项纯函数测试**：内容类型映射与未知扩展拒绝、basename 精确替换且不误伤相似名、相对 / 绝对 / 单引号 / fragment / 反斜杠前缀保留、External 与不精确匹配原样保留、空 renames 与畸形 / 未闭合 XML 不改写、任意路径 Override 改写与 Default 插入位置、无 Override 也补 Default、已有 Default 不重复、多 rename 去重、未知扩展保留原声明、关系路径解析（相对 `_rels` / 根包 / 绝对 / 中文百分号解码 / fragment）、外部与逃逸路径保守拒绝。
+- 新增 `tests/ooxml_e2e.rs` **5 项端到端测试**（真实临时文件与 ZIP，无需 GUI / FFmpeg）：7 类 part 的 `.rels` 与 3 条任意路径 Override 在改名后全部同步且相似文件名不被误伤；全包悬空清理只删 2 条悬空关系与 2 条失效 Override、notesSlides / layouts / masters / handoutMaster / theme 的合法关系全部保留且幂等；空目录 / 非 UTF-8 `.rels` / 逃逸与外部目标不被误删；完整流水线把 `ppt/notesSlides/media/photo.jpg` 真正压小、输出 ZIP 可回读、所有悬空引用清空、自定义路径媒体用 Stored；`repack_pptx` 对非 `ppt/media` 媒体同样 Stored。
+- 共 **102 项测试全部通过**（`cargo test -- --include-ignored`）：84 项既有 + 18 项本轮新增。本机未安装 FFmpeg，依赖真实转码的用例按设计内部跳过并打印提示；视频链路由既有 mock 端到端与参数单测覆盖。
+
+### 验证
+
+- `cargo check --all-targets` 零警告；`cargo clippy --all-targets -- -D warnings` 零告警；`cargo test -- --include-ignored` 102 项全通过（15 个测试组，0 失败）。
+- 端到端用例直接回读输出 ZIP：断言首条目为 `[Content_Types].xml`、`ppt/notesSlides/media/photo.jpg` 确实变小、其压缩方式为 `Stored`、所有 `.rels` 与 CT 中不再出现悬空目标、源文件未被改动。
+- 两个发布包按 `package.sh macos` / `package.sh windows` 重新构建并校验（见 Release 资产）：macOS 为 Mach-O 64-bit arm64、Windows 为 PE32+ x86-64，Info.plist 的 `CFBundleShortVersionString` / `CFBundleVersion` 均为 1.2.4；两包内 4 份文档（README / CHANGELOG / THIRD_PARTY_NOTICES / FFMPEG_SETUP）与仓库逐字节一致；两包均不含任何 FFmpeg 二进制。
+- `scripts/ffmpeg-license-check.sh` 门禁七情形实测：GPL / version3 / nonfree / 读不到配置串的 macOS 二进制，以及含 nonfree 配置的 `.exe` 全部被拒绝；干净的 LGPL 构建（含 `.exe`）放行。没有重新引入任何 GPL / nonfree 二进制。
+
+### 已知限制
+
+- 引用完整性只校验 **OPC 关系与内容类型声明**，不校验幻灯片 XML 正文里的 `r:embed` / `r:id` 是否指向一个存在的 `rId`——若源包本身就有这种损坏，工具不会替它补关系，但也不会让情况变坏。
+- 改名后多余的 `<Default Extension="旧扩展">` 声明按设计保留（OOXML 合法且无害）。
+- 体积「预估」仍是启发式估算（待办 5）；仍无无头 CLI（待办 6）、GitHub Actions CI（待办 7）、日志导出 / `--doctor`（待办 8）、像素级视觉回归（待办 10）、超大文件流式处理与 Unicode 路径边界补齐（待办 11）、发布包签名与 SHA256SUMS（待办 12）。
+- 文件之间仍串行，图片并行上限固定为 4，视频转码仍串行（待办 9）；批量模式仍不预先展开媒体清单。
+- 元数据按字节段 / 块原样搬运的限制沿用 v1.2.3（不物理旋转像素、`pHYs` 缩放时丢弃、APNG 按静态图处理）。
+- v1.0.0 / v1.0.1 / v1.1.0 的历史 Release 附件仍附带 GPL+nonfree FFmpeg，需维护者在 GitHub 手动删除。
+- 中文字体显示与像素级视觉回归仍需在目标系统目视确认（本版未改动界面结构）。
+
 ## [v1.2.3] - 2026-11-15
 
 元数据保真版。此前图片重编码只写像素，源文件里的 EXIF 方向、ICC 色彩配置、PNG 文本与色彩块全部丢失，GIF 循环次数还被一律写成无限循环——带方向的手机照片压缩后会被转歪，带色彩配置的图片会偏色，有限次播放的动图会变成无限播放。本版把这些元数据原样搬运回重编码结果，并修掉调色板优化后透明索引与实体颜色串位的问题。纯补丁版本，无新依赖、无 UI 结构变化、无破坏性变更。

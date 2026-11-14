@@ -118,8 +118,8 @@ struct WorkOutcome {
 ///
 /// 1. 并行把每个启用的媒体压成候选文件（视频串行）。
 /// 2. 串行裁决：仅当候选严格更小时才替换，替换前已有备份可回滚。
-/// 3. 视频容器改名时同步 OOXML 声明。
-/// 4. 剥 XML 注释与预览缩略图（连同关系）。
+/// 3. 视频容器改名时同步全部 OOXML 声明（含非 `ppt/media/` 路径）。
+/// 4. 剥 XML 注释与预览缩略图（连同关系），并清理其余悬空关系。
 /// 5. 原子重打包并回读校验。
 pub fn run_pipeline(
     extract_dir: &Path,
@@ -319,6 +319,23 @@ pub fn run_pipeline(
     }
     for problem in crate::core::extractor::strip_thumbnails(extract_dir) {
         send(&tx, CompressMessage::Error(format!("缩略图清理：{}", problem)));
+    }
+
+    // 打包前收尾：删除指向不存在部件的 .rels 关系与失效的 Override。
+    // 失败只记一条非致命日志，绝不因为「体检没做成」而阻断已经压好的包。
+    match crate::core::ooxml::prune_dangling_relationships(extract_dir) {
+        Ok(report) if !report.is_empty() => send(
+            &tx,
+            CompressMessage::Error(format!(
+                "引用完整性：已清理 {} 条悬空关系、{} 条失效内容类型声明（非致命）",
+                report.removed_relationships, report.removed_overrides
+            )),
+        ),
+        Ok(_) => {}
+        Err(e) => send(
+            &tx,
+            CompressMessage::Error(format!("引用完整性检查未完成：{}（非致命）", e)),
+        ),
     }
 
     send(&tx, CompressMessage::Progress(total, total, "正在重新打包…".into()));

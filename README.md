@@ -1,6 +1,6 @@
 # PPTX 压缩器
 
-![Version](https://img.shields.io/badge/version-v1.2.3-blue.svg)
+![Version](https://img.shields.io/badge/version-v1.2.4-blue.svg)
 ![macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)
 ![Windows](https://img.shields.io/badge/platform-Windows-0078d7.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
@@ -30,8 +30,13 @@
 - **视频压缩**（需自备 FFmpeg）
   - H.264 / AAC 编码；有 `libx264` 时画质滑杆映射为 CRF（界面显示真实 CRF），只有 `libopenh264` 的 LGPL 构建自动切换为码率模型
   - 可选分辨率缩放，`yuv420p` 保证 PowerPoint 可播放，H.264 level 交给编码器决定
-  - 「兼容模式」开启时，非 MP4 视频转为 `.mp4` 并**同步更新 `[Content_Types].xml` 与 `.rels` 引用**；关闭时跳过非 MP4 视频
+  - 「兼容模式」开启时，非 MP4 视频转为 `.mp4` 并**同步更新全包 `[Content_Types].xml` 与 `.rels` 引用**（含 notesSlides / 母版 / 主题 / 自定义目录）；关闭时跳过非 MP4 视频
   - 找不到 FFmpeg 或缺少 H.264 编码器时，视频项明确报错并写入活动日志，绝不静默跳过
+- **OOXML 引用完整性**（v1.2.4 新增）
+  - 媒体改名按 `Target` / `PartName` 的**文件名精确匹配**改写，不再做全局子串替换（不会误伤 `image10.mov`、`clip.mov.bak` 这类相似名字）
+  - `[Content_Types].xml` 的 `<Override>` 不再假设 `/ppt/media/` 前缀：notesSlides、slideLayouts / slideMasters、handoutMaster、theme 与任意自定义目录下的引用都同步，并自动补齐缺失的 `<Default>` 扩展声明
+  - 打包前清理**所有**指向不存在部件的 `.rels` 关系与失效 `<Override>`（不只是缩略图），避免 PowerPoint 提示「需要修复」；外部链接、有效 `rId` 一律保留，体检失败也不会阻断已压好的包
+  - 放在 `ppt/media/` 之外的媒体同样参与压缩，重打包时按扩展名统一用 Stored，不再被二次 deflate
 - **XML 与包清理**
   - 剥离 XML 注释（保留文本空白，避免破坏 `<a:t>` 内容）
   - 剥离 `docProps/thumbnail.*` 预览图，并同步清理对应的关系与内容类型声明
@@ -86,6 +91,7 @@
 
 ## 版本历史
 
+- **v1.2.4**：OOXML 引用完整性 —— 媒体改名改为按关系 / 内容类型标签精确定位（不再全局子串替换、不再假设 `/ppt/media/` 前缀），notesSlides / 母版 / 主题 / 自定义目录引用全量同步；打包前清理所有悬空关系与失效内容类型声明；非 `ppt/media` 路径的媒体也参与压缩并统一 Stored；新增 18 项回归测试。
 - **v1.2.3**：元数据保真 —— JPEG 的 EXIF 方向 / ICC、PNG 的文本与色彩块、GIF 的循环次数与透明索引在重编码后原样保留，避免图片旋转、偏色、循环次数被改写与透明区域串色；新增 26 项回归测试。
 - **v1.2.2**：新增批量队列，一次选择 / 拖入多个 PPTX 逐个独立处理，界面显示队列、单文件结果与文件级总进度，失败隔离；单文件路径行为不变。
 - **v1.2.1**：新增输入安全检测，解压前阻断加密 / IRM / OLE / 结构损坏包，对签名、宏、嵌入对象与修改保护给出明确告警，并补齐相应界面与回归测试。
@@ -101,7 +107,7 @@
 - 批量队列的文件之间仍串行处理（流水线内部对图片最多 4 线程并行、对视频转码串行），总耗时约为各文件之和；批量模式不预先展开媒体清单，也没有逐项开关与体积预估。
 - 元数据按字节段 / 块原样搬运，不解释其内容：缩放后 EXIF 里的像素尺寸与缩略图标签可能滞后（不影响方向判定）；PNG 的 `pHYs` 在缩放时会被丢弃；与调色板 / 色型绑定的 `tRNS`、`PLTE`、`bKGD`、`hIST`、`sBIT` 及 APNG 动画块不搬运，APNG 仍按静态图处理。
 - 候选文件（含搬运回来的元数据）比原件大时会走「变小才替换」，此时保留原件，元数据自然完整。
-- OOXML 引用同步目前只覆盖 `ppt/media` 下的媒体改名与缩略图清理，notesSlides / masters / handoutMaster 等引用尚未专项覆盖。
+- 引用完整性只校验 OPC 关系与 `[Content_Types].xml` 声明，不校验幻灯片 XML 正文里的 `r:embed` / `r:id` 是否指向存在的 `rId`（源包自带的这类损坏不会被自动修复）；改名后多余的旧 `<Default>` 扩展声明按设计保留。
 - 体积「预估」是启发式估算，不代表真实结果。
 - 视频压缩依赖用户自备 FFmpeg；本机未安装时，真实转码端到端用例会在测试中明确跳过，视频链路由 mock 用例与参数单测覆盖。
 - **v1.0.0 / v1.0.1 / v1.1.0 的历史 Release 资产仍附带 GPL+nonfree FFmpeg**，需维护者在 GitHub 手动删除对应附件；当前仓库与 v1.2.0 起的新包已不含该二进制。
@@ -119,7 +125,7 @@
 
 ```bash
 cargo check --all-targets
-cargo test                       # 58 项：队列模型、批量端到端、ZIP 往返、输入检测、mock FFmpeg、UI 冒烟
+cargo test                       # 102 项：OOXML 引用、元数据、队列模型、批量端到端、ZIP 往返、输入检测、mock FFmpeg、UI 冒烟
 cargo test -- --include-ignored  # 装了 FFmpeg 时额外跑真实转码端到端用例
 cargo clippy --all-targets -- -D warnings
 cargo build --release            # 产物：target/release/pptx-compressor

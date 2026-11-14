@@ -1,7 +1,8 @@
 //! PPTX ZIP extraction, OOXML reference maintenance and repacking.
 
 use crate::core::inspection::{self, Inspection};
-use crate::core::MediaInfo;
+use crate::core::{MediaInfo, MediaType};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self};
 use std::path::{Component, Path, PathBuf};
@@ -139,34 +140,63 @@ pub fn extract_pptx_inspected(
     Ok((scan_media(extract_dir), inspection))
 }
 
-/// Scan the extracted directory for media files under ppt/media/.
-fn scan_media(extract_dir: &Path) -> Vec<MediaInfo> {
-    use crate::core::MediaType;
-    let mut media_files = Vec::new();
-    let media_dir = extract_dir.join("ppt").join("media");
+fn media_info(extract_dir: &Path, path: PathBuf) -> MediaInfo {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_string();
+    let media_type = MediaType::from_extension(&ext);
+    let relative = path
+        .strip_prefix(extract_dir)
+        .unwrap_or(&path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    MediaInfo::new(relative, path, media_type)
+}
 
-    if !media_dir.exists() {
+/// Scan the extracted package for media parts.
+///
+/// OOXML 并不要求媒体一定放在 `ppt/media/`：notesSlides、slideLayouts、
+/// slideMasters、handoutMaster、theme 乃至自定义 part 目录都可以有自己的
+/// 媒体子目录。这里保留 `ppt/media/` 下全部文件（含不可压缩的 Other，供
+/// 界面展示），再补扫 `ppt/` 树其余目录中的可压缩媒体并去重；`_rels`
+/// 关系目录与 `docProps` 元数据目录不会误纳入。
+fn scan_media(extract_dir: &Path) -> Vec<MediaInfo> {
+    let mut media_files = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let ppt_root = extract_dir.join("ppt");
+    let media_dir = ppt_root.join("media");
+    if !ppt_root.exists() {
         return media_files;
     }
 
     if let Ok(entries) = fs::read_dir(&media_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_file() {
-                continue;
+            if path.is_file() && seen.insert(path.clone()) {
+                media_files.push(media_info(extract_dir, path));
             }
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_string();
-            let media_type = MediaType::from_extension(&ext);
-            let relative = path
-                .strip_prefix(extract_dir)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            media_files.push(MediaInfo::new(relative, path, media_type));
+        }
+    }
+
+    for entry in walkdir::WalkDir::new(&ppt_root)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if !path.is_file() || path.starts_with(&media_dir) {
+            continue;
+        }
+        if path.components().any(|c| c.as_os_str() == "_rels") {
+            continue;
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if MediaType::from_extension(ext) == MediaType::Other {
+            continue;
+        }
+        if seen.insert(path.to_path_buf()) {
+            media_files.push(media_info(extract_dir, path.to_path_buf()));
         }
     }
 
@@ -237,7 +267,9 @@ pub fn repack_pptx(extract_dir: &Path, output_path: &Path) -> io::Result<()> {
             zip.add_directory(dir_name, deflate_options)
                 .map_err(io::Error::other)?;
         } else {
-            let is_media = relative.starts_with("ppt/media/") && is_compressed_format(file_path);
+            // 已压缩媒体一律 Stored：不再假设它们只在 `ppt/media/` 下，
+            // notesSlides / masters / 自定义目录里的媒体同样不该二次 deflate。
+            let is_media = is_compressed_format(file_path);
             let options = if is_media { stored_options } else { deflate_options };
             zip.start_file(relative, options)
                 .map_err(io::Error::other)?;
@@ -290,40 +322,14 @@ fn remove_tags_containing(content: &str, needle: &str, start: &str, end: &str) -
     result
 }
 
-fn replace_content_type(tag: &str, content_type: &str) -> String {
-    const KEY: &str = "ContentType=\"";
-    let mut result = tag.to_string();
-    if let Some(pos) = result.find(KEY) {
-        let value_start = pos + KEY.len();
-        if let Some(rel_end) = result[value_start..].find('"') {
-            result.replace_range(value_start..value_start + rel_end, content_type);
-            return result;
-        }
-    }
-    result.replacen("/>", &format!(" {}\"{}\"/>", KEY.trim_end_matches('"'), content_type), 1)
-}
-
-/// Fix the ContentType of an Override tag after a media file was renamed.
-fn fix_content_type(s: &str, file_name: &str) -> String {
-    let needle = format!("PartName=\"/ppt/media/{}\"", file_name);
-    let Some(pos) = s.find(&needle) else {
-        return s.to_string();
-    };
-    let Some(start) = s[..pos].rfind("<Override") else {
-        return s.to_string();
-    };
-    let Some(rel_end) = s[pos..].find("/>") else {
-        return s.to_string();
-    };
-    let end = pos + rel_end + 2;
-    let mut result = s.to_string();
-    let fixed = replace_content_type(&s[start..end], "video/mp4");
-    result.replace_range(start..end, &fixed);
-    result
-}
-
-/// Keep `[Content_Types].xml` and every `.rels` file in sync after a video
-/// was converted from e.g. `media1.wmv` to `media1.mp4`.
+/// Keep `[Content_Types].xml` and **every** `.rels` part in sync after a
+/// media file was renamed (e.g. `media1.wmv` → `media1.mp4`).
+///
+/// v1.2.4 起改写逻辑收敛到 `core::ooxml`：按关系 / Override 标签精确定位
+/// 属性，按 basename 全等匹配，不再做全局子串替换（会误伤
+/// `image1.mov` → `image10.mov`），也不再假设媒体只在 `/ppt/media/`。
+/// notesSlides / slideLayouts / slideMasters / handoutMaster / theme 的
+/// `.rels` 与自定义路径的 Override 因此一并覆盖。
 pub fn rewrite_media_references(
     extract_dir: &Path,
     renames: &[(String, String)],
@@ -346,34 +352,15 @@ pub fn rewrite_media_references(
             continue;
         }
 
-        let original = fs::read_to_string(path)?;
-        let mut updated = original.clone();
-        for (old, new) in renames {
-            if is_rels {
-                updated = updated.replace(old.as_str(), new.as_str());
-            } else {
-                updated = updated.replace(
-                    &format!("/ppt/media/{}", old),
-                    &format!("/ppt/media/{}", new),
-                );
-                updated = fix_content_type(&updated, new);
-            }
-        }
-        if is_ct
-            && renames.iter().any(|(_, n)| n.ends_with(".mp4"))
-            && !updated.contains("Extension=\"mp4\"")
-        {
-            // Insert inside <Types ...>, not after the XML declaration's `?>`.
-            let insert_at = updated
-                .find("<Types")
-                .and_then(|p| updated[p..].find('>').map(|q| p + q + 1));
-            if let Some(pos) = insert_at {
-                updated.insert_str(
-                    pos,
-                    "<Default Extension=\"mp4\" ContentType=\"video/mp4\"/>",
-                );
-            }
-        }
+        // 非 UTF-8 的 XML 部件不做改写：改写它比保留旧引用更危险。
+        let Ok(original) = fs::read_to_string(path) else {
+            continue;
+        };
+        let updated = if is_rels {
+            crate::core::ooxml::rewrite_rels_targets(&original, renames).0
+        } else {
+            crate::core::ooxml::rewrite_content_types(&original, renames).0
+        };
         if updated != original {
             fs::write(path, updated)?;
         }
