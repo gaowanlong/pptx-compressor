@@ -1,92 +1,89 @@
 //! JPEG and PNG compression handlers.
+//!
+//! Handlers only produce a candidate file; the pipeline decides whether it is
+//! small enough to replace the original. Decoding is bounded so a malformed or
+//! hostile image cannot exhaust memory.
 
 use crate::core::CompressionSettings;
+use crate::handlers::CompressCandidate;
 use image::imageops::FilterType;
-use image::ImageEncoder as _;
+use image::{ImageEncoder as _, ImageReader, Limits};
 use std::path::Path;
 
-/// Compress a JPEG file by re-encoding at the specified quality.
-/// Optionally resizes if the image exceeds the configured max width.
-pub fn compress_jpeg(path: &Path, settings: &CompressionSettings) -> Result<(), String> {
-    let img = image::open(path).map_err(|e| format!("Failed to open JPEG {}: {}", path.display(), e))?;
+const MAX_DIMENSION: u32 = 20_000;
+const MAX_ALLOC: u64 = 256 * 1024 * 1024;
 
-    let img = if settings.image_max_width_enabled && img.width() > settings.image_max_width {
-        let ratio = settings.image_max_width as f64 / img.width() as f64;
-        let new_height = (img.height() as f64 * ratio) as u32;
-        img.resize_exact(
-            settings.image_max_width,
-            new_height,
-            FilterType::Lanczos3,
-        )
-    } else {
-        img
-    };
+fn decode_bounded(path: &Path) -> Result<image::DynamicImage, String> {
+    let mut reader = ImageReader::open(path)
+        .map_err(|e| format!("Failed to open image {}: {}", path.display(), e))?
+        .with_guessed_format()
+        .map_err(|e| format!("Failed to detect image format {}: {}", path.display(), e))?;
 
-    // Encode JPEG to memory buffer
-    let mut buffer = std::io::Cursor::new(Vec::new());
-    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-        &mut buffer,
-        settings.image_quality,
-    );
-    encoder
-        .write_image(
-            img.as_bytes(),
-            img.width(),
-            img.height(),
-            img.color().into(),
-        )
-        .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_DIMENSION);
+    limits.max_image_height = Some(MAX_DIMENSION);
+    limits.max_alloc = Some(MAX_ALLOC);
+    reader.limits(limits);
 
-    // Write compressed data to file (replaces original)
-    std::fs::write(path, buffer.into_inner())
-        .map_err(|e| format!("Failed to write JPEG: {}", e))?;
-
-    Ok(())
+    reader
+        .decode()
+        .map_err(|e| format!("Failed to decode image {}: {}", path.display(), e))
 }
 
-/// Compress a PNG file by re-encoding with maximum compression.
-/// Optionally resizes if the image exceeds the configured max width.
-/// Uses the `image` crate's PNG encoder with Best compression and Adaptive filtering.
-/// Falls back to keeping the original if re-encoding does not reduce file size.
-pub fn compress_png(path: &Path, settings: &CompressionSettings) -> Result<(), String> {
-    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-    use image::ImageEncoder as _;
-
-    let img = image::open(path).map_err(|e| format!("Failed to open PNG {}: {}", path.display(), e))?;
-
-    let img = if settings.image_max_width_enabled && img.width() > settings.image_max_width {
+fn resize_if_needed(img: image::DynamicImage, settings: &CompressionSettings) -> image::DynamicImage {
+    if settings.image_max_width_enabled && img.width() > settings.image_max_width {
         let ratio = settings.image_max_width as f64 / img.width() as f64;
-        let new_height = (img.height() as f64 * ratio) as u32;
-        img.resize_exact(
-            settings.image_max_width,
-            new_height,
-            image::imageops::FilterType::Lanczos3,
-        )
+        // A very wide image can round the height down to zero; never emit a 0px image.
+        let new_height = ((img.height() as f64 * ratio) as u32).max(1);
+        img.resize_exact(settings.image_max_width, new_height, FilterType::Lanczos3)
     } else {
         img
-    };
+    }
+}
+
+/// Re-encode a JPEG at the configured quality into `candidate`.
+pub fn compress_jpeg(
+    path: &Path,
+    candidate: &Path,
+    settings: &CompressionSettings,
+) -> Result<CompressCandidate, String> {
+    let img = resize_if_needed(decode_bounded(path)?, settings);
+
+    // JPEG has no alpha channel; encoding a 4-channel image produces files
+    // that PowerPoint may refuse to render.
+    let rgb = img.to_rgb8();
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    let encoder =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, settings.image_quality);
+    encoder
+        .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+        .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
+
+    std::fs::write(candidate, buffer.into_inner())
+        .map_err(|e| format!("Failed to write JPEG candidate: {}", e))?;
+
+    Ok(CompressCandidate { path: candidate.to_path_buf(), new_extension: None })
+}
+
+/// Re-encode a PNG with maximum compression into `candidate`.
+pub fn compress_png(
+    path: &Path,
+    candidate: &Path,
+    settings: &CompressionSettings,
+) -> Result<CompressCandidate, String> {
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+
+    let img = resize_if_needed(decode_bounded(path)?, settings);
 
     let mut buffer = std::io::Cursor::new(Vec::new());
-    let encoder = PngEncoder::new_with_quality(&mut buffer, CompressionType::Best, FilterType::Adaptive);
+    let encoder =
+        PngEncoder::new_with_quality(&mut buffer, CompressionType::Best, FilterType::Adaptive);
     encoder
-        .write_image(
-            img.as_bytes(),
-            img.width(),
-            img.height(),
-            img.color().into(),
-        )
+        .write_image(img.as_bytes(), img.width(), img.height(), img.color().into())
         .map_err(|e| format!("Failed to encode PNG: {}", e))?;
 
-    let new_data = buffer.into_inner();
-    let original_len = std::fs::metadata(path)
-        .map(|m| m.len() as usize)
-        .unwrap_or(usize::MAX);
+    std::fs::write(candidate, buffer.into_inner())
+        .map_err(|e| format!("Failed to write PNG candidate: {}", e))?;
 
-    // Only write back if we actually reduced the file size
-    if new_data.len() < original_len {
-        std::fs::write(path, &new_data)
-            .map_err(|e| format!("Failed to write optimized PNG: {}", e))?;
-    }
-
-    Ok(())
+    Ok(CompressCandidate { path: candidate.to_path_buf(), new_extension: None })
 }

@@ -74,10 +74,33 @@ fn ffmpeg_candidate_paths() -> Vec<PathBuf> {
         }
     }
 
+    // Development and test builds: `target/debug/deps/` is one level deeper
+    // than a normal executable, so the relative guess above misses. Use the
+    // compile-time manifest path as an explicit fallback.
+    #[cfg(not(target_os = "linux"))]
+    paths.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("ffmpeg")
+            .join(if cfg!(windows) { "windows" } else { "macos" })
+            .join(FFMPEG_BIN),
+    );
+
+    // Location written by `download_ffmpeg`. Without this entry a freshly
+    // downloaded binary can never be found by the second lookup.
+    if let Some(data_dir) = dirs::data_local_dir() {
+        paths.push(
+            data_dir
+                .join("pptx-compressor")
+                .join("ffmpeg")
+                .join(FFMPEG_BIN),
+        );
+    }
+
     paths
 }
 
-/// Check if FFmpeg is available (bundled, on PATH, or in known dev locations).
+/// Check if FFmpeg is available (bundled, downloaded, on PATH, or in dev dirs).
 /// Returns the path / command to use.
 pub fn find_ffmpeg() -> Option<String> {
     // 1. Check candidate paths (bundled .app, dev resources, etc.)

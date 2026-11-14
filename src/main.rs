@@ -6,13 +6,9 @@
 // Hide the console window on Windows (GUI-only application).
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-mod app;
-mod core;
-mod handlers;
-mod ui;
-mod utils;
-
-use app::PptxCompressorApp;
+// Use the library crate as the single source of truth. Declaring `mod app;`
+// here as well compiled every module twice.
+use pptx_compressor::app::PptxCompressorApp;
 
 fn main() -> eframe::Result {
     let icon_data = load_icon();

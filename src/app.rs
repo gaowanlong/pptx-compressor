@@ -7,7 +7,7 @@
 use crate::core::{CompressMessage, CompressionSettings, MediaInfo};
 use crate::ui::{file_panel, media_list, progress, settings};
 use crate::utils::ffmpeg;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
@@ -119,7 +119,7 @@ impl eframe::App for PptxCompressorApp {
                             .inner_margin(egui::Margin::symmetric(12.0, 4.0))
                             .show(ui, |ui| {
                                 ui.label(
-                                    egui::RichText::new("v0.2")
+                                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
                                         .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 180))
                                         .size(11.0),
                                 );
@@ -438,7 +438,12 @@ fn action_bar(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
                             .min_size(egui::vec2(0.0, 32.0));
                             if ui.add(btn).clicked() {
                                 app.error_messages.clear();
-                                app.state = AppState::Ready;
+                                let source = app.input_files.first().cloned();
+                                if let Some(path) = source {
+                                    crate::ui::file_panel::load_pptx(app, Some(&path));
+                                } else {
+                                    app.state = AppState::Idle;
+                                }
                             }
                         });
                     });
@@ -447,8 +452,24 @@ fn action_bar(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
     }
 }
 
+/// Pick a non-existing `_compressed[_N].pptx` path instead of overwriting.
+fn unique_output_path(dir: &Path, stem: &str) -> PathBuf {
+    let base = dir.join(format!("{}_compressed.pptx", stem));
+    if !base.exists() {
+        return base;
+    }
+    for i in 2..1000 {
+        let candidate = dir.join(format!("{}_compressed_{}.pptx", stem, i));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    base
+}
+
 impl PptxCompressorApp {
     fn process_messages(&mut self) {
+        let mut cancelled = false;
         if let Some(rx) = &self.rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
@@ -472,13 +493,41 @@ impl PptxCompressorApp {
                         self.progress_file = String::new();
                     }
                     CompressMessage::Error(msg) => {
-                        self.error_messages.push(msg);
+                        if self.error_messages.len() < 50 {
+                            self.error_messages.push(msg);
+                        }
                     }
                     CompressMessage::FatalError(msg) => {
                         self.error_messages.push(msg);
                         self.state = AppState::Error;
                     }
+                    CompressMessage::Cancelled => cancelled = true,
                 }
+            }
+        }
+
+        // Handle after the receiver borrow ends: discard the partially
+        // modified extraction tree and re-open the source, so a retry always
+        // starts from unmodified bytes.
+        if cancelled {
+            self.rx = None;
+            self.cancel_flag.store(false, Ordering::Relaxed);
+            self.error_messages.clear();
+            self.media_files.clear();
+            self.extract_dir = None;
+            self._temp_dir = None;
+            self.progress_current = 0;
+            self.progress_total = 0;
+            self.progress_file.clear();
+            self.state = AppState::Idle;
+            self.error_messages.push(
+                "Compression cancelled — no output was written. Source reloaded.".into(),
+            );
+            let source = self.input_files.first().cloned();
+            if let Some(path) = source {
+                crate::ui::file_panel::load_pptx(self, Some(&path));
+            } else {
+                self.input_files.clear();
             }
         }
     }
@@ -504,14 +553,13 @@ impl PptxCompressorApp {
         let original_pptx_size = std::fs::metadata(input)
             .map(|m| m.len())
             .unwrap_or(0);
-        let output_path = if let Some(ref out_dir) = self.output_dir {
-            let stem = input.file_stem().unwrap_or_default().to_string_lossy();
-            out_dir.join(format!("{}_compressed.pptx", stem))
-        } else {
-            let stem = input.file_stem().unwrap_or_default().to_string_lossy();
-            let parent = input.parent().unwrap_or(input.as_path());
-            parent.join(format!("{}_compressed.pptx", stem))
-        };
+        let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+        let dir = self
+            .output_dir
+            .clone()
+            .unwrap_or_else(|| input.parent().unwrap_or(input.as_path()).to_path_buf());
+        // Never silently overwrite an existing result.
+        let output_path = unique_output_path(&dir, &stem);
 
         self.output_path = Some(output_path.clone());
 

@@ -16,15 +16,19 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
         );
         ui.add_space(10.0);
 
-        if preset_pill(ui, "High Quality", true).clicked() {
+        let (iq, vq) = (app.settings.image_quality, app.settings.video_quality);
+        let high = iq == 90 && vq == 65;
+        let balanced = iq == 75 && vq == 45;
+        let small = iq == 30 && vq == 18;
+        if preset_pill(ui, "High Quality", high).clicked() {
             app.settings.preset_high();
         }
         ui.add_space(4.0);
-        if preset_pill(ui, "Balanced", false).clicked() {
+        if preset_pill(ui, "Balanced", balanced).clicked() {
             app.settings.preset_medium();
         }
         ui.add_space(4.0);
-        if preset_pill(ui, "Small Size", false).clicked() {
+        if preset_pill(ui, "Small Size", small).clicked() {
             app.settings.preset_low();
         }
     });
@@ -32,34 +36,24 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
     ui.add_space(14.0);
 
     // ── Image Quality ───────────────────────────────────
-    let img_quality = app.settings.image_quality;
-    slider_row(
-        ui,
-        "Image Quality",
-        &mut app.settings.image_quality,
-        0..=100,
-        img_quality,
-    );
+    slider_row(ui, "Image Quality", &mut app.settings.image_quality, 0..=100);
 
     ui.add_space(8.0);
 
     // ── Video Quality ─────────────────────────────────────
-    let qual = app.settings.video_quality;
-    slider_row(
-        ui,
-        "Video Quality",
-        &mut app.settings.video_quality,
-        0..=100,
-        qual,
-    );
-    // Show quality label below
+    slider_row(ui, "Video Quality", &mut app.settings.video_quality, 0..=100);
+    // Read after the slider so the label always matches the current value.
     ui.add_space(-4.0);
     ui.horizontal(|ui| {
         ui.add_space(110.0); // indent to match slider position
         ui.label(
-            egui::RichText::new(video_quality_label(qual))
-                .color(TEXT_SECONDARY)
-                .size(11.0),
+            egui::RichText::new(format!(
+                "{} · CRF {}",
+                video_quality_label(app.settings.video_quality),
+                app.settings.crf()
+            ))
+            .color(TEXT_SECONDARY)
+            .size(11.0),
         );
     });
 
@@ -190,7 +184,6 @@ fn slider_row(
     label: &str,
     value: &mut u8,
     range: std::ops::RangeInclusive<u8>,
-    display_value: u8,
 ) {
     ui.horizontal(|ui| {
         ui.label(
@@ -204,7 +197,7 @@ fn slider_row(
             .trailing_fill(true);
         ui.add(slider);
         ui.label(
-            egui::RichText::new(format!("{}", display_value))
+            egui::RichText::new(format!("{}", *value))
                 .color(BLUE)
                 .size(13.0)
                 .strong(),
@@ -213,14 +206,16 @@ fn slider_row(
 }
 
 /// Preset pill button — subtle outline for unselected, filled for selected.
-fn preset_pill(ui: &mut egui::Ui, label: &str, _selected: bool) -> egui::Response {
+fn preset_pill(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
+    let (fill, color) = if selected {
+        (BLUE, egui::Color32::WHITE)
+    } else {
+        (egui::Color32::from_rgb(236, 241, 251), BLUE)
+    };
     let btn = egui::Button::new(
-        egui::RichText::new(label)
-            .color(egui::Color32::WHITE)
-            .size(12.0)
-            .strong(),
+        egui::RichText::new(label).color(color).size(12.0).strong(),
     )
-    .fill(BLUE)
+    .fill(fill)
     .rounding(20.0)
     .min_size(egui::vec2(0.0, 28.0));
     ui.add(btn)

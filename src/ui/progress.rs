@@ -125,7 +125,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
                     ui.label(
                         egui::RichText::new(format!(
                             "({}/{}) {}",
-                            app.progress_current + 1,
+                            app.progress_current.min(app.progress_total),
                             app.progress_total,
                             app.progress_file
                         ))
@@ -275,6 +275,19 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
 
                 });
             let _ = card;
+        }
+    }
+
+    // Non-fatal problems must be visible in every state, not only on error.
+    if app.state != AppState::Error && !app.error_messages.is_empty() {
+        ui.add_space(10.0);
+        ui.label(egui::RichText::new("Activity log").color(TEXT_SECONDARY).size(11.0));
+        for msg in app.error_messages.iter().rev().take(3) {
+            ui.label(
+                egui::RichText::new(format!("• {}", msg))
+                    .color(TEXT_SECONDARY)
+                    .size(10.5),
+            );
         }
     }
 }

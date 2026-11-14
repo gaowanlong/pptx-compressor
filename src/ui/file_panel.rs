@@ -2,6 +2,7 @@
 
 use crate::app::{AppState, PptxCompressorApp, BLUE, TEXT_PRIMARY, TEXT_SECONDARY};
 use crate::core::extractor::extract_pptx;
+use std::path::{Path, PathBuf};
 
 pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
     // Reserve consistent height so drop zone and file card occupy same vertical space
@@ -16,9 +17,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
     // Handle drag-and-drop
     if let Some(hovered) = ui.input(|i| i.raw.dropped_files.first().cloned()) {
         if let Some(path) = hovered.path {
-            if path.extension().and_then(|e| e.to_str()) == Some("pptx") {
+            let is_pptx = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("pptx"))
+                .unwrap_or(false);
+            if is_pptx {
                 app.input_files = vec![path];
-                load_pptx(app);
+                load_pptx(app, None);
             }
         }
     }
@@ -53,12 +59,12 @@ fn show_drop_zone(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
 
                 // Glass-style browse button
                 if glass_button(ui, "Browse Files", BLUE).clicked() {
-                    if let Some(files) = rfd::FileDialog::new()
+                    if let Some(file) = rfd::FileDialog::new()
                         .add_filter("PowerPoint", &["pptx"])
-                        .pick_files()
+                        .pick_file()
                     {
-                        app.input_files = files;
-                        load_pptx(app);
+                        app.input_files = vec![file];
+                        load_pptx(app, None);
                     }
                 }
             });
@@ -107,12 +113,12 @@ fn show_file_loaded(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
             app.state = AppState::Idle;
             app.media_files.clear();
             app.input_files.clear();
-            if let Some(files) = rfd::FileDialog::new()
+            if let Some(file) = rfd::FileDialog::new()
                 .add_filter("PowerPoint", &["pptx"])
-                .pick_files()
+                .pick_file()
             {
-                app.input_files = files;
-                load_pptx(app);
+                app.input_files = vec![file];
+                load_pptx(app, None);
             }
         }
         ui.add_space(6.0);
@@ -169,30 +175,35 @@ pub fn text_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(btn)
 }
 
-fn load_pptx(app: &mut PptxCompressorApp) {
-    if let Some(pptx_path) = app.input_files.first() {
-        app.state = AppState::Loading;
+pub fn load_pptx(app: &mut PptxCompressorApp, source: Option<&Path>) {
+    let pptx_path: PathBuf = match source {
+        Some(p) => p.to_path_buf(),
+        None => match app.input_files.first() {
+            Some(p) => p.clone(),
+            None => return,
+        },
+    };
+    app.state = AppState::Loading;
 
-        match tempfile::tempdir() {
-            Ok(temp_dir) => {
-                let extract_path = temp_dir.path().to_path_buf();
-                match extract_pptx(pptx_path, &extract_path) {
-                    Ok(media) => {
-                        app.media_files = media;
-                        app.extract_dir = Some(extract_path);
-                        app._temp_dir = Some(temp_dir);
-                        app.state = AppState::Ready;
-                    }
-                    Err(e) => {
-                        app.error_messages.push(format!("Failed to extract PPTX: {}", e));
-                        app.state = AppState::Error;
-                    }
+    match tempfile::tempdir() {
+        Ok(temp_dir) => {
+            let extract_path = temp_dir.path().to_path_buf();
+            match extract_pptx(&pptx_path, &extract_path) {
+                Ok(media) => {
+                    app.media_files = media;
+                    app.extract_dir = Some(extract_path);
+                    app._temp_dir = Some(temp_dir);
+                    app.state = AppState::Ready;
+                }
+                Err(e) => {
+                    app.error_messages.push(format!("Failed to extract PPTX: {}", e));
+                    app.state = AppState::Error;
                 }
             }
-            Err(e) => {
-                app.error_messages.push(format!("Failed to create temp directory: {}", e));
-                app.state = AppState::Error;
-            }
+        }
+        Err(e) => {
+            app.error_messages.push(format!("Failed to create temp directory: {}", e));
+            app.state = AppState::Error;
         }
     }
 }
