@@ -84,9 +84,11 @@ fn reset_clears_input_warnings_but_keeps_preferences() {
     app.input_files = vec![std::path::PathBuf::from("/tmp/demo.pptx")];
     app.input_warnings = vec!["包含数字签名，压缩后签名会失效".into()];
     app.activity_log.push("已解析文稿".into());
+    app.source_size = 48_600_000;
 
     app.reset_for_new_file();
 
+    assert_eq!(app.source_size, 0, "源文稿体积应随文件一起清空");
     assert!(app.input_warnings.is_empty());
     assert!(app.input_files.is_empty());
     assert!(app.activity_log.is_empty());

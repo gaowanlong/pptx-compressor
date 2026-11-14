@@ -80,7 +80,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
         }
         AppState::Idle | AppState::Loading => {
             let hint = if app.state == AppState::Loading {
-                "正在后台解析文稿，完成后这里会显示媒体清单与预估。"
+                "正在后台解析文稿，完成后这里会显示媒体构成与可优化空间。"
             } else {
                 "选择一个 PPTX 后，这里会显示处理进度与体积对比。"
             };

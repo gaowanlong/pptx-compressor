@@ -7,8 +7,9 @@ use crate::app::{
 };
 use std::path::Path;
 
+/// 体积格式化口径下沉到 `core::estimate`，保证界面、测试与后续 CLI 一致。
 pub fn fmt_size(bytes: u64) -> String {
-    bytesize::ByteSize(bytes).to_string()
+    crate::core::estimate::fmt_size(bytes)
 }
 
 /// 段落标题 + 浅色副标题 + 右侧次要操作。

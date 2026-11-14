@@ -133,6 +133,8 @@ fn add_files(app: &mut PptxCompressorApp, paths: &[PathBuf]) {
     app.activity_log.clear();
     app.result_original = 0;
     app.result_compressed = 0;
+    // 批量模式不展示单文稿构成，避免残留上一个文件的体积。
+    app.source_size = 0;
     app.progress_current = 0;
     app.progress_total = count;
     app.progress_file.clear();
@@ -432,6 +434,8 @@ pub fn load_pptx(app: &mut PptxCompressorApp, source: Option<&Path>) {
     };
 
     app.input_files = vec![pptx_path.clone()];
+    // v1.2.5：记录源包真实字节数，供「基于实际媒体构成」的体积说明使用。
+    app.source_size = std::fs::metadata(&pptx_path).map(|m| m.len()).unwrap_or(0);
     app.queue = None;
     app.batch_rx = None;
     app.batch_current_media = (0, 0);

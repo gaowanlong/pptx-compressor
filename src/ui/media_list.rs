@@ -1,9 +1,13 @@
-//! 左侧主导区下半部：包内媒体清单、体积预估与逐项开关。
+//! 左侧主导区下半部：包内媒体清单、基于真实构成的体积说明与逐项开关。
+//!
+//! v1.2.5 起不再显示按固定系数推算的「预计可节省 N%」，改为展示真实媒体构成
+//! 与可优化空间上界；压缩完成后才显示真实节省百分比。
 
 use crate::app::{
     AppState, PptxCompressorApp, ACCENT, ACCENT_SOFT, AMBER, AMBER_SOFT, GREEN,
     GREEN_SOFT, LINE, MUTED, RED, RED_SOFT, SURFACE, TEXT, WHITE,
 };
+use crate::core::estimate::{self, MediaComposition};
 use crate::core::{MediaStatus, MediaType};
 use crate::ui::components;
 
@@ -20,11 +24,15 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
     let subtitle = if app.is_batch() {
         format!("批量队列 · {} 个文稿", app.batch_len())
     } else {
-        format!(
-            "{} 个文件 · 合计 {}",
+        let mut text = format!(
+            "{} 个文件 · 媒体合计 {}",
             app.media_files.len(),
             components::fmt_size(total_original)
-        )
+        );
+        if app.source_size > 0 {
+            text.push_str(&format!(" · 文稿 {}", components::fmt_size(app.source_size)));
+        }
+        text
     };
     components::section_head(
         ui,
@@ -56,11 +64,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
     }
 
     if state == AppState::Ready {
-        show_estimate(ui, app, total_original);
+        show_estimate(ui, app);
         ui.add_space(10.0);
     }
 
-    let settings = app.settings.clone();
     let log = app.activity_log.clone();
     let mut notes: Vec<(String, &'static str, egui::Color32)> = Vec::new();
 
@@ -110,7 +117,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
                                 .size(11.0),
                         );
 
-                        let (saving_text, saving_color) = saving_text(media, &settings);
+                        let (saving_text, saving_color) = saving_text(media);
                         ui.label(
                             egui::RichText::new(saving_text)
                                 .color(saving_color)
@@ -160,18 +167,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
     }
 }
 
-fn show_estimate(ui: &mut egui::Ui, app: &PptxCompressorApp, total_original: u64) {
-    let estimated: u64 = app
-        .media_files
-        .iter()
-        .map(|m| m.estimated_size(&app.settings))
-        .sum();
-    let saved = total_original.saturating_sub(estimated);
-    let pct = if total_original > 0 {
-        (saved as f64 / total_original as f64 * 100.0) as u8
-    } else {
-        0
-    };
+/// 基于真实媒体构成的体积说明：只给出可验证的上界与构成，不预测压缩结果。
+fn show_estimate(ui: &mut egui::Ui, app: &PptxCompressorApp) {
+    let composition = MediaComposition::from_media(&app.media_files, app.source_size);
 
     egui::Frame::none()
         .fill(ACCENT_SOFT)
@@ -179,60 +177,38 @@ fn show_estimate(ui: &mut egui::Ui, app: &PptxCompressorApp, total_original: u64
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(221, 231, 255)))
         .inner_margin(egui::Margin::symmetric(12.0, 10.0))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "预计可节省约 {}（{}%）",
-                        components::fmt_size(saved),
-                        pct
-                    ))
+            ui.label(
+                egui::RichText::new(composition.headline())
                     .color(crate::app::ACCENT_DARK)
                     .size(12.0)
                     .strong(),
+            );
+            ui.add_space(3.0);
+            for text in [
+                composition.detail(),
+                composition.breakdown(),
+                composition.caveat().to_owned(),
+            ] {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(text).color(crate::app::TEXT_2).size(10.5))
+                        .wrap(),
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new("按当前参数估算，实际结果以压缩完成为准")
-                            .color(crate::app::TEXT_2)
-                            .size(10.5),
-                    );
-                });
-            });
+            }
         });
 }
 
-fn saving_text(
-    media: &crate::core::MediaInfo,
-    settings: &crate::core::CompressionSettings,
-) -> (String, egui::Color32) {
+fn saving_text(media: &crate::core::MediaInfo) -> (String, egui::Color32) {
     match media.status {
         MediaStatus::Done if media.compressed_size > 0 => {
-            let saved = media.original_size.saturating_sub(media.compressed_size);
-            let pct = if media.original_size > 0 {
-                saved as f64 / media.original_size as f64 * 100.0
-            } else {
-                0.0
-            };
-            (format!("-{}%", pct as u8), GREEN)
+            let pct = estimate::real_saving_pct(media.original_size, media.compressed_size);
+            (format!("-{}%", pct), GREEN)
         }
         MediaStatus::Done => ("—".into(), MUTED),
         MediaStatus::Skipped => ("保留原件".into(), AMBER),
         MediaStatus::Failed => ("—".into(), RED),
-        MediaStatus::Processing => ("计算中…".into(), ACCENT),
-        MediaStatus::Pending => {
-            if !media.enabled {
-                return ("不处理".into(), MUTED);
-            }
-            let estimate = media.estimated_size(settings);
-            let pct = if media.original_size > 0 {
-                (media.original_size.saturating_sub(estimate)) as f64
-                    / media.original_size as f64
-                    * 100.0
-            } else {
-                0.0
-            };
-            (format!("≈ -{}%", pct as u8), MUTED)
-        }
+        MediaStatus::Processing => ("处理中…".into(), ACCENT),
+        // 待处理态只说明「是否参与优化」，不再显示按系数推算的假百分比。
+        MediaStatus::Pending => (estimate::pending_label(media).to_owned(), MUTED),
     }
 }
 

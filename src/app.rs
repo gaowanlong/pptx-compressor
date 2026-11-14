@@ -104,6 +104,9 @@ pub struct PptxCompressorApp {
     pub progress_file: String,
     pub result_original: u64,
     pub result_compressed: u64,
+    /// 源 PPTX 的实际字节数，用于按真实媒体构成展示文稿体积；0 表示未知。
+    /// v1.2.5：不再需要压缩参数来「预估」体积，只需要真实大小。
+    pub source_size: u64,
     /// 活动日志：非致命错误、跳过原因、清理告警都在这里可见。
     pub activity_log: Vec<String>,
     /// 输入安全检测的告警（签名、宏、嵌入对象、修改保护等），显示在文件卡片下。
@@ -146,6 +149,7 @@ impl Default for PptxCompressorApp {
             progress_file: String::new(),
             result_original: 0,
             result_compressed: 0,
+            source_size: 0,
             activity_log: Vec::new(),
             input_warnings: Vec::new(),
             ffmpeg_available: located.is_some(),
@@ -267,6 +271,7 @@ impl PptxCompressorApp {
         self.progress_file.clear();
         self.result_original = 0;
         self.result_compressed = 0;
+        self.source_size = 0;
         self.activity_log.clear();
         self.input_warnings.clear();
         self.output_path = None;

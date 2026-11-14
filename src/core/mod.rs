@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub mod batch;
+pub mod estimate;
 pub mod extractor;
 pub mod inspection;
 pub mod ooxml;
@@ -110,44 +111,10 @@ impl MediaInfo {
         }
     }
 
-    /// Rough heuristic estimate, shown in the UI as an estimate only.
-    /// Real sizes are reported after compression.
-    pub fn estimated_size(&self, settings: &CompressionSettings) -> u64 {
-        if !self.enabled {
-            return self.original_size;
-        }
-        let ratio = match self.media_type {
-            MediaType::Jpeg => {
-                let q = settings.image_quality as f64 / 100.0;
-                let mut r = 0.15 + 0.55 * q;
-                if settings.image_max_width_enabled {
-                    r *= 0.75;
-                }
-                r
-            }
-            MediaType::Png => {
-                if settings.image_max_width_enabled { 0.55 } else { 0.88 }
-            }
-            MediaType::Gif => {
-                match (settings.gif_palette_optimize, settings.gif_frame_drop) {
-                    (true, true) => 0.40,
-                    (true, false) => 0.50,
-                    (false, true) => 0.55,
-                    (false, false) => 0.65,
-                }
-            }
-            MediaType::Video => {
-                let q = settings.video_quality as f64 / 100.0;
-                let mut r = 0.08 + q * 0.65;
-                if settings.video_max_resolution_enabled {
-                    r *= 0.7;
-                }
-                r
-            }
-            MediaType::Other => 1.0,
-        };
-        (self.original_size as f64 * ratio) as u64
-    }
+    // v1.2.5：原先的 `estimated_size(&CompressionSettings)` 按媒体类型套固定
+    // 压缩比（JPEG 0.15+0.55q、GIF 0.40…、视频 0.08+0.65q 等），与素材内容
+    // 完全无关，却会随滑杆给出看似精确的「预计可节省 N%」。已整体移除，
+    // 改由 `core::estimate::MediaComposition` 基于真实媒体构成报告可优化空间上界。
 }
 
 /// Preset shown as a segmented control in the UI.

@@ -225,3 +225,109 @@ fn batch_queue_pending_rows_render_without_any_result() {
         });
     });
 }
+
+/// 从一帧 egui 输出里提取所有已排版的文本，用于断言界面**真实展示**的文案。
+fn rendered_text(output: &egui::FullOutput) -> String {
+    output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn mixed_media_app(source_size: u64, all_disabled: bool) -> PptxCompressorApp {
+    let mut app = app_with_media(AppState::Ready);
+    app.source_size = source_size;
+    for (i, (kind, size)) in [
+        (MediaType::Png, 5_000_000u64),
+        (MediaType::Gif, 3_000_000),
+        (MediaType::Video, 22_000_000),
+        (MediaType::Other, 800_000),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut m = MediaInfo::new(
+            format!("ppt/media/extra{i}.bin"),
+            PathBuf::from(format!("/tmp/额外媒体{i}.bin")),
+            kind,
+        );
+        m.original_size = size;
+        app.media_files.push(m);
+    }
+    if all_disabled {
+        for m in &mut app.media_files {
+            m.enabled = false;
+        }
+    }
+    app
+}
+
+/// v1.2.5：就绪态界面只展示真实构成与可优化空间上界，不再出现按系数推算的
+/// 「预计可节省约 X（Y%）」与逐项「≈ -N%」。
+#[test]
+fn ready_panel_never_shows_heuristic_estimated_saving() {
+    let ctx = egui::Context::default();
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1080.0, 740.0),
+        )),
+        ..Default::default()
+    };
+
+    let mut app = mixed_media_app(48_600_000, false);
+    let output = ctx.run(input, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            media_list::show(ui, &mut app);
+        });
+    });
+    let text = rendered_text(&output);
+
+    assert!(text.contains("可优化空间上限"), "{text}");
+    assert!(text.contains("占媒体总量"), "{text}");
+    assert!(text.contains("文稿"), "{text}");
+    assert!(text.contains("JPEG"), "{text}");
+    assert!(text.contains("视频"), "{text}");
+    assert!(text.contains("不是预测"), "{text}");
+    assert!(text.contains("可优化"), "{text}");
+    assert!(!text.contains("预计可节省"), "{text}");
+    assert!(!text.contains("按当前参数估算"), "{text}");
+    assert!(!text.contains("≈ -"), "{text}");
+}
+
+/// 源文稿体积未知、以及全部媒体被禁用时，构成卡片也必须正常绘制。
+#[test]
+fn estimate_card_renders_with_unknown_size_and_all_disabled() {
+    let ctx = egui::Context::default();
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(900.0, 600.0),
+        )),
+        ..Default::default()
+    };
+
+    for (source_size, all_disabled) in [(0u64, false), (12_000, true)] {
+        let mut app = mixed_media_app(source_size, all_disabled);
+        let output = ctx.run(input.clone(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                media_list::show(ui, &mut app);
+            });
+        });
+        let text = rendered_text(&output);
+        if all_disabled {
+            assert!(text.contains("没有可优化"), "{text}");
+        } else {
+            assert!(text.contains("可优化空间上限"), "{text}");
+            // 文件名本身可能含「文稿」二字，只检查体积明细行即可。
+            for line in text.lines().filter(|line| line.contains("媒体合计")) {
+                assert!(!line.contains("文稿"), "体积未知时不应编造文稿大小：{line}");
+            }
+        }
+    }
+}
