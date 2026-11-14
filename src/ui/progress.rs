@@ -15,6 +15,69 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
     components::section_head(ui, "进度与结果", meta, |_| {});
 
     match app.state {
+        // 批量模式：进度按「文件」计，内部媒体进度只体现在下方文字里。
+        AppState::Ready if app.is_batch() => {
+            let total = app.batch_len();
+            components::card(ui, WHITE, LINE, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("队列就绪").color(TEXT).size(11.5).strong(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(format!("0 / {total}"))
+                                .color(MUTED)
+                                .size(11.0),
+                        );
+                    });
+                });
+                ui.add_space(8.0);
+                components::progress_bar(ui, 0.0);
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "共 {total} 个 PPTX，逐个独立解包、压缩与打包；单个文件失败不影响其他。点击右下角开始。"
+                    ))
+                    .color(TEXT_2)
+                    .size(11.0),
+                );
+            });
+        }
+        AppState::Compressing if app.is_batch() => {
+            let pct = app.progress_pct();
+            let total = app.batch_len();
+            let done = app
+                .queue
+                .as_ref()
+                .map(|q| q.finished_count())
+                .unwrap_or(0);
+            let detail = app.progress_file.clone();
+            components::card(ui, WHITE, LINE, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("已完成 {done} / {total} 个文件"))
+                            .color(TEXT)
+                            .size(11.5)
+                            .strong(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(format!("{pct}%"))
+                                .color(TEXT_2)
+                                .size(11.0),
+                        );
+                    });
+                });
+                ui.add_space(8.0);
+                components::progress_bar(ui, pct as f32 / 100.0);
+                if !detail.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(detail).color(MUTED).size(10.0),
+                    );
+                }
+            });
+        }
         AppState::Idle | AppState::Loading => {
             let hint = if app.state == AppState::Loading {
                 "正在后台解析文稿，完成后这里会显示媒体清单与预估。"
@@ -179,6 +242,23 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
                 );
             });
         }
+    }
+
+    if app.state == AppState::Done && app.is_batch() {
+        let summary = app
+            .queue
+            .as_ref()
+            .map(|q| q.summary())
+            .unwrap_or_default();
+        ui.add_space(10.0);
+        ui.label(
+            egui::RichText::new(format!(
+                "批量结果：成功 {} 个 · 失败 {} 个；上方体积仅统计成功文件，失败文件不产生输出。",
+                summary.succeeded, summary.failed
+            ))
+            .color(TEXT_2)
+            .size(10.5),
+        );
     }
 
     if app.state != AppState::Error && !app.activity_log.is_empty() {

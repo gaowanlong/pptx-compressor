@@ -2429,7 +2429,7 @@ dependencies = [
 
 [[package]]
 name = "pptx-compressor"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "bytesize",
  "dirs",

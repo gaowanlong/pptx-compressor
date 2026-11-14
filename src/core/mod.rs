@@ -3,9 +3,11 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub mod batch;
 pub mod extractor;
 pub mod inspection;
 pub mod pipeline;
+pub mod queue;
 
 /// Convert the 0–100 quality slider into an FFmpeg CRF value.
 /// quality 0 -> CRF 51 (worst), quality 100 -> CRF 0 (lossless).

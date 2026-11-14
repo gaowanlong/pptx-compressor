@@ -4,11 +4,13 @@
 //! 组织：主操作按钮在所有状态下都固定在右下角，状态反馈集中在标题栏与右栏。
 //! 所有耗时工作（解包、压缩）都在后台线程完成，GUI 只通过消息通道接收结果。
 
+use crate::core::batch::{self, BatchMessage};
+use crate::core::queue::{self, BatchQueue};
 use crate::core::{CompressMessage, CompressionSettings, MediaInfo};
 use crate::ui::{components, file_panel, media_list, progress, settings};
 use crate::utils::ffmpeg::{self, FfmpegSource, LicenseClass};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 
@@ -117,6 +119,11 @@ pub struct PptxCompressorApp {
     pub show_only_compressible: bool,
     pub output_path: Option<PathBuf>,
     pub font_ok: bool,
+    /// 多文件批量队列；单文件模式为 `None`，沿用原有解析 / 压缩流程。
+    pub queue: Option<BatchQueue>,
+    pub batch_rx: Option<mpsc::Receiver<BatchMessage>>,
+    /// 当前文件内部的媒体进度 `(current, total)`，用于平滑文件级总进度。
+    pub batch_current_media: (usize, usize),
 }
 
 impl Default for PptxCompressorApp {
@@ -150,6 +157,9 @@ impl Default for PptxCompressorApp {
             show_only_compressible: false,
             output_path: None,
             font_ok: true,
+            queue: None,
+            batch_rx: None,
+            batch_current_media: (0, 0),
         }
     }
 }
@@ -219,7 +229,20 @@ impl PptxCompressorApp {
         self.log("已恢复自动查找 FFmpeg");
     }
 
+    /// 是否处于多文件批量模式。单文件模式 `queue` 为 `None`，行为完全不变。
+    pub fn is_batch(&self) -> bool {
+        self.queue.is_some()
+    }
+
+    pub fn batch_len(&self) -> usize {
+        self.queue.as_ref().map_or(0, queue::BatchQueue::len)
+    }
+
     pub fn progress_pct(&self) -> u8 {
+        if let Some(q) = &self.queue {
+            let (current, total) = self.batch_current_media;
+            return queue::combined_progress_pct(q.finished_count(), q.len(), current, total);
+        }
         if self.progress_total == 0 {
             0
         } else {
@@ -247,6 +270,9 @@ impl PptxCompressorApp {
         self.activity_log.clear();
         self.input_warnings.clear();
         self.output_path = None;
+        self.queue = None;
+        self.batch_rx = None;
+        self.batch_current_media = (0, 0);
     }
 
     pub fn log(&mut self, message: impl Into<String>) {
@@ -362,9 +388,149 @@ impl PptxCompressorApp {
                 self.input_files.clear();
             }
         }
+
+        // 3) 批量队列消息。先收齐再处理，避免持有 receiver 借用期间改动 self。
+        let batch_messages: Vec<BatchMessage> = match &self.batch_rx {
+            Some(rx) => rx.try_iter().collect(),
+            None => Vec::new(),
+        };
+        for msg in batch_messages {
+            match msg {
+                BatchMessage::JobStarted(idx, name, count, warnings) => {
+                    if let Some(q) = self.queue.as_mut() {
+                        q.mark_running(idx);
+                        q.set_warnings(idx, warnings.clone());
+                        q.set_media_count(idx, count);
+                    }
+                    self.progress_current = idx;
+                    self.batch_current_media = (0, count);
+                    self.progress_file = format!(
+                        "第 {}/{} 个 · {}（{} 个媒体）",
+                        idx + 1,
+                        self.batch_len(),
+                        name,
+                        count
+                    );
+                    self.log(format!("开始处理 {name}：发现 {count} 个媒体"));
+                    for warning in warnings {
+                        self.log(format!("输入检查 · {name} · {warning}"));
+                    }
+                }
+                BatchMessage::JobProgress(idx, current, total, file) => {
+                    self.batch_current_media = (current, total);
+                    self.progress_file = format!(
+                        "第 {}/{} 个 · {}/{} · {}",
+                        idx + 1,
+                        self.batch_len(),
+                        current,
+                        total,
+                        file
+                    );
+                }
+                BatchMessage::JobLog(_idx, line) => self.log(line),
+                BatchMessage::JobFinished(idx, original, compressed, path) => {
+                    if let Some(q) = self.queue.as_mut() {
+                        q.mark_done(idx, original, compressed, path.clone());
+                    }
+                    self.progress_current = idx + 1;
+                    self.batch_current_media = (0, 0);
+                    let short = path.file_name().unwrap_or_default().to_string_lossy();
+                    self.log(format!(
+                        "完成 · {short}：{} → {}",
+                        components::fmt_size(original),
+                        components::fmt_size(compressed)
+                    ));
+                }
+                BatchMessage::JobFailed(idx, err) => {
+                    if let Some(q) = self.queue.as_mut() {
+                        q.mark_failed(idx, err.clone());
+                    }
+                    self.progress_current = idx + 1;
+                    self.batch_current_media = (0, 0);
+                    self.log(format!("失败 · 第 {} 个文件：{err}", idx + 1));
+                }
+                BatchMessage::Finished => {
+                    self.batch_rx = None;
+                    let (summary, first_output) = {
+                        let q = self.queue.as_ref();
+                        (
+                            q.map(queue::BatchQueue::summary).unwrap_or_default(),
+                            q.and_then(queue::BatchQueue::first_output),
+                        )
+                    };
+                    self.result_original = summary.total_original;
+                    self.result_compressed = summary.total_compressed;
+                    self.progress_current = self.progress_total;
+                    self.batch_current_media = (0, 0);
+                    self.progress_file.clear();
+                    self.output_path = first_output;
+                    self.state = if summary.succeeded > 0 {
+                        AppState::Done
+                    } else {
+                        AppState::Error
+                    };
+                    self.log(format!(
+                        "批量完成：成功 {} 个、失败 {} 个",
+                        summary.succeeded, summary.failed
+                    ));
+                }
+                BatchMessage::Cancelled => {
+                    self.batch_rx = None;
+                    self.cancel_flag.store(false, Ordering::Relaxed);
+                    self.state = AppState::Idle;
+                    self.progress_current = 0;
+                    self.progress_file.clear();
+                    self.batch_current_media = (0, 0);
+                    if let Some(q) = self.queue.as_mut() {
+                        q.reset();
+                    }
+                    self.log("已取消批量处理；已生成的输出文件保留，源文件未改动");
+                }
+            }
+        }
+    }
+
+    /// 启动批量压缩：建通道、重置队列状态、交给后台线程串行处理。
+    fn start_batch(&mut self) {
+        let inputs: Vec<PathBuf> = self
+            .queue
+            .as_ref()
+            .map(|q| q.jobs.iter().map(|j| j.path.clone()).collect())
+            .unwrap_or_default();
+        if inputs.is_empty() {
+            return;
+        }
+
+        self.state = AppState::Compressing;
+        self.activity_log.clear();
+        self.cancel_flag.store(false, Ordering::Relaxed);
+        self.progress_current = 0;
+        self.progress_total = inputs.len();
+        self.progress_file.clear();
+        self.batch_current_media = (0, 0);
+        self.result_original = 0;
+        self.result_compressed = 0;
+        self.output_path = None;
+        if let Some(q) = self.queue.as_mut() {
+            q.reset();
+        }
+
+        let (tx, rx) = mpsc::channel();
+        self.batch_rx = Some(rx);
+        let settings = self.settings.clone();
+        let output_dir = self.output_dir.clone();
+        let cancel = self.cancel_flag.clone();
+
+        std::thread::spawn(move || {
+            batch::run_batch(&inputs, output_dir.as_deref(), &settings, tx, cancel);
+        });
     }
 
     pub fn start_compression(&mut self) {
+        if self.is_batch() {
+            self.start_batch();
+            return;
+        }
         if self.input_files.is_empty() || self.extract_dir.is_none() {
             return;
         }
@@ -388,7 +554,7 @@ impl PptxCompressorApp {
             .output_dir
             .clone()
             .unwrap_or_else(|| input.parent().unwrap_or(input.as_path()).to_path_buf());
-        let output_path = unique_output_path(&dir, &stem);
+        let output_path = queue::unique_output_path(&dir, &stem);
         self.output_path = Some(output_path.clone());
 
         std::thread::spawn(move || {
@@ -568,6 +734,33 @@ impl PptxCompressorApp {
 
     fn action_hint(&self) -> (String, String) {
         match self.state {
+            // 批量模式的专属文案；单文件路径的分支保持原样。
+            AppState::Ready if self.is_batch() => (
+                format!("已加入 {} 个 PPTX，将逐个独立压缩", self.batch_len()),
+                format!("输出到 {} · 单文件失败不影响其他", self.output_hint()),
+            ),
+            AppState::Compressing if self.is_batch() => (
+                format!("正在逐个压缩 {} 个文稿，可随时取消", self.batch_len()),
+                self.progress_file.clone(),
+            ),
+            AppState::Done if self.is_batch() => {
+                let summary = self
+                    .queue
+                    .as_ref()
+                    .map(queue::BatchQueue::summary)
+                    .unwrap_or_default();
+                (
+                    format!(
+                        "批量完成：成功 {} 个、失败 {} 个",
+                        summary.succeeded, summary.failed
+                    ),
+                    self.output_hint(),
+                )
+            }
+            AppState::Error if self.is_batch() => (
+                "全部文稿处理失败，请查看右侧日志定位原因".into(),
+                "源文件未被修改，可清空队列后重试".into(),
+            ),
             AppState::Idle => (
                 "尚未选择文件".into(),
                 "拖入 PPTX 或点击「选择 PPTX 文件」开始".into(),
@@ -607,6 +800,13 @@ impl PptxCompressorApp {
     }
 
     fn output_hint(&self) -> String {
+        if self.is_batch() {
+            return self
+                .output_dir
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "各自源文件所在目录".into());
+        }
         let Some(input) = self.input_files.first() else {
             return "（未选择源文件）".into();
         };
@@ -615,7 +815,9 @@ impl PptxCompressorApp {
             .output_dir
             .clone()
             .unwrap_or_else(|| input.parent().unwrap_or(input.as_path()).to_path_buf());
-        unique_output_path(&dir, &stem).to_string_lossy().into_owned()
+        queue::unique_output_path(&dir, &stem)
+            .to_string_lossy()
+            .into_owned()
     }
 
     fn render_actions(&mut self, ui: &mut egui::Ui) {
@@ -625,11 +827,21 @@ impl PptxCompressorApp {
                 let _ = components::primary_button(ui, "开始压缩", false);
             }
             AppState::Ready => {
-                if components::primary_button(ui, "开始压缩", true).clicked() {
+                let label = if self.is_batch() {
+                    format!("开始压缩 {} 个文件", self.batch_len())
+                } else {
+                    "开始压缩".to_owned()
+                };
+                if components::primary_button(ui, &label, true).clicked() {
                     self.start_compression();
                 }
                 ui.add_space(8.0);
-                if components::secondary_button(ui, "移除文件").clicked() {
+                let clear = if self.is_batch() {
+                    "清空队列"
+                } else {
+                    "移除文件"
+                };
+                if components::secondary_button(ui, clear).clicked() {
                     self.reset_for_new_file();
                 }
             }
@@ -641,7 +853,12 @@ impl PptxCompressorApp {
                 }
             }
             AppState::Done => {
-                if components::primary_button(ui, "再压一个", true).clicked() {
+                let again = if self.is_batch() {
+                    "再压一批"
+                } else {
+                    "再压一个"
+                };
+                if components::primary_button(ui, again, true).clicked() {
                     self.reset_for_new_file();
                 }
                 ui.add_space(8.0);
@@ -661,34 +878,33 @@ impl PptxCompressorApp {
                 }
             }
             AppState::Error => {
-                if components::primary_button(ui, "重新设置并重试", true).clicked() {
-                    let source = self.input_files.first().cloned();
-                    if let Some(path) = source {
-                        file_panel::load_pptx(self, Some(&path));
+                let retry = if self.is_batch() {
+                    "重新压缩整批"
+                } else {
+                    "重新设置并重试"
+                };
+                if components::primary_button(ui, retry, true).clicked() {
+                    if self.is_batch() {
+                        self.start_batch();
                     } else {
-                        self.reset_for_new_file();
+                        let source = self.input_files.first().cloned();
+                        if let Some(path) = source {
+                            file_panel::load_pptx(self, Some(&path));
+                        } else {
+                            self.reset_for_new_file();
+                        }
                     }
                 }
                 ui.add_space(8.0);
-                if components::secondary_button(ui, "更换文件").clicked() {
+                let change = if self.is_batch() {
+                    "清空队列"
+                } else {
+                    "更换文件"
+                };
+                if components::secondary_button(ui, change).clicked() {
                     self.reset_for_new_file();
                 }
             }
         }
     }
-}
-
-/// 从不覆盖已有结果：`<原名>_compressed.pptx`，重名时追加序号。
-fn unique_output_path(dir: &Path, stem: &str) -> PathBuf {
-    let base = dir.join(format!("{}_compressed.pptx", stem));
-    if !base.exists() {
-        return base;
-    }
-    for i in 2..1000 {
-        let candidate = dir.join(format!("{}_compressed_{}.pptx", stem, i));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    base
 }

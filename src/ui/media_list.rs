@@ -17,14 +17,19 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
         "仅看可压缩"
     };
 
-    components::section_head(
-        ui,
-        "媒体内容",
-        &format!(
+    let subtitle = if app.is_batch() {
+        format!("批量队列 · {} 个文稿", app.batch_len())
+    } else {
+        format!(
             "{} 个文件 · 合计 {}",
             app.media_files.len(),
             components::fmt_size(total_original)
-        ),
+        )
+    };
+    components::section_head(
+        ui,
+        "媒体内容",
+        &subtitle,
         |ui| {
             if components::text_link(ui, filter_label).clicked() {
                 app.show_only_compressible = !only_compressible;
@@ -33,7 +38,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
     );
 
     if app.media_files.is_empty() {
-        let hint = if state == AppState::Loading {
+        let hint = if app.is_batch() {
+            "批量队列模式：每个文稿在开始后独立解析，不预先展开媒体清单"
+        } else if state == AppState::Loading {
             "正在解析文稿，媒体清单稍后显示…"
         } else {
             "选择文件后，这里会列出 PPTX 内的所有媒体"
