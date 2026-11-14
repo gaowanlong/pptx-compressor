@@ -53,7 +53,7 @@ fn write_package_skeleton(root: &Path, media_name: &str, content_type: &str) {
     fs::write(root.join("docProps/thumbnail.jpeg"), b"fake-thumbnail").unwrap();
 }
 
-fn run(root: &Path, media: &mut Vec<MediaInfo>, settings: &CompressionSettings) -> (PathBuf, Vec<CompressMessage>) {
+fn run(root: &Path, media: &mut [MediaInfo], settings: &CompressionSettings) -> (PathBuf, Vec<CompressMessage>) {
     let output = root.parent().unwrap().join("out.pptx");
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -80,8 +80,11 @@ fn larger_candidate_never_replaces_original() {
     write_package_skeleton(&root, "small.jpg", "image/jpeg");
     let original = make_jpeg(&root.join("ppt/media/small.jpg"), 20);
 
-    let mut settings = CompressionSettings::default();
-    settings.image_quality = 95; // re-encoding a q20 JPEG will be larger
+    // 重编码 q20 JPEG 只会变大，用来验证「变大不替换」。
+    let settings = CompressionSettings {
+        image_quality: 95,
+        ..CompressionSettings::default()
+    };
     let mut media = vec![MediaInfo::new(
         "ppt/media/small.jpg".into(),
         root.join("ppt/media/small.jpg"),
@@ -105,8 +108,10 @@ fn smaller_candidate_replaces_and_output_is_valid() {
     write_package_skeleton(&root, "big.jpg", "image/jpeg");
     let original = make_jpeg(&root.join("ppt/media/big.jpg"), 95);
 
-    let mut settings = CompressionSettings::default();
-    settings.image_quality = 20;
+    let settings = CompressionSettings {
+        image_quality: 20,
+        ..CompressionSettings::default()
+    };
     let mut media = vec![MediaInfo::new(
         "ppt/media/big.jpg".into(),
         root.join("ppt/media/big.jpg"),

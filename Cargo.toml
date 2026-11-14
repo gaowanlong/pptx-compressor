@@ -1,6 +1,6 @@
 [package]
 name = "pptx-compressor"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2021"
 description = "A GUI tool to compress PPTX file size by recompressing embedded images, videos and GIFs"
 license = "MIT"
@@ -25,6 +25,8 @@ tempfile = "3"
 walkdir = "2"
 bytesize = "1"
 dirs = "5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # Windows specific
 [target.'cfg(windows)'.dependencies]

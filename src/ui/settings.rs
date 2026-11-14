@@ -1,272 +1,234 @@
-//! Compression settings panel — Apple-style controls with blue theme.
+//! 右侧从属区上半部：压缩方案（预设 / 质量 / 兼容模式 / 高级项）。
+//!
+//! 高风险参数收进折叠区，默认只呈现三档预设与两个质量滑块。
 
-use crate::app::{PptxCompressorApp, BLUE, TEXT_PRIMARY, TEXT_SECONDARY};
+use crate::app::{
+    PptxCompressorApp, ACCENT, LINE, MUTED, SURFACE, TEXT, TEXT_2, WHITE,
+};
+use crate::core::Preset;
+use crate::ui::components;
 
 pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
-    // Reserve consistent height to match Progress card side-by-side
-    ui.set_min_height(210.0);
-
-    // ── Preset pills ────────────────────────────────────
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("Preset")
-                .color(TEXT_PRIMARY)
-                .size(13.0)
-                .strong(),
-        );
-        ui.add_space(10.0);
-
-        let (iq, vq) = (app.settings.image_quality, app.settings.video_quality);
-        let high = iq == 90 && vq == 65;
-        let balanced = iq == 75 && vq == 45;
-        let small = iq == 30 && vq == 18;
-        if preset_pill(ui, "High Quality", high).clicked() {
-            app.settings.preset_high();
-        }
-        ui.add_space(4.0);
-        if preset_pill(ui, "Balanced", balanced).clicked() {
-            app.settings.preset_medium();
-        }
-        ui.add_space(4.0);
-        if preset_pill(ui, "Small Size", small).clicked() {
-            app.settings.preset_low();
-        }
-    });
-
-    ui.add_space(14.0);
-
-    // ── Image Quality ───────────────────────────────────
-    slider_row(ui, "Image Quality", &mut app.settings.image_quality, 0..=100);
-
-    ui.add_space(8.0);
-
-    // ── Video Quality ─────────────────────────────────────
-    slider_row(ui, "Video Quality", &mut app.settings.video_quality, 0..=100);
-    // Read after the slider so the label always matches the current value.
-    ui.add_space(-4.0);
-    ui.horizontal(|ui| {
-        ui.add_space(110.0); // indent to match slider position
-        ui.label(
-            egui::RichText::new(format!(
-                "{} · CRF {}",
-                video_quality_label(app.settings.video_quality),
-                app.settings.crf()
-            ))
-            .color(TEXT_SECONDARY)
+    ui.label(egui::RichText::new("压缩方案").color(TEXT).size(13.0).strong());
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new("选一个预设，或按需微调")
+            .color(MUTED)
             .size(11.0),
-        );
-    });
-
+    );
     ui.add_space(12.0);
 
-    // ── Video H.264 conversion toggle ─────────────────────
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("Video")
-                .color(TEXT_PRIMARY)
-                .size(13.0)
-                .strong(),
-        );
-        ui.add_space(8.0);
-        if glass_toggle(ui, "H.264", app.settings.video_convert_to_h264).clicked() {
-            app.settings.video_convert_to_h264 = !app.settings.video_convert_to_h264;
-        }
-        ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new("Convert to H.264 for compatibility")
-                .color(TEXT_SECONDARY)
-                .size(11.0),
-        );
-    });
-
-    ui.add_space(12.0);
-
-    // ── GIF settings ────────────────────────────────────
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("GIF")
-                .color(TEXT_PRIMARY)
-                .size(13.0)
-                .strong(),
-        );
-        ui.add_space(8.0);
-
-        if glass_toggle(ui, "Palette", app.settings.gif_palette_optimize).clicked() {
-            app.settings.gif_palette_optimize = !app.settings.gif_palette_optimize;
-        }
-        ui.add_space(4.0);
-        if glass_toggle(ui, "Frame Drop", app.settings.gif_frame_drop).clicked() {
-            app.settings.gif_frame_drop = !app.settings.gif_frame_drop;
-        }
-        if app.settings.gif_frame_drop {
-            ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new("FPS")
-                    .color(TEXT_SECONDARY)
-                    .size(12.0),
-            );
-            ui.add(
-                egui::DragValue::new(&mut app.settings.gif_target_fps)
-                    .range(1..=60)
-                    .speed(1)
-                    .suffix(" fps"),
-            );
-        }
-    });
-
+    show_presets(ui, app);
+    ui.add_space(16.0);
+    show_slider(
+        ui,
+        "图片质量",
+        &mut app.settings.image_quality,
+        "数值越高越清晰；JPEG 重编码后若变大会自动保留原图",
+    );
+    ui.add_space(14.0);
+    let crf = app.settings.crf();
+    show_slider(
+        ui,
+        "视频质量",
+        &mut app.settings.video_quality,
+        &format!("对应 H.264 CRF {} · 数值越高画质越好", crf),
+    );
+    ui.add_space(16.0);
+    show_toggle_row(ui, app);
     ui.add_space(10.0);
+    show_advanced(ui, app);
+}
 
-    // ── Advanced toggle ─────────────────────────────────
-    let expand_icon = if app.show_advanced { "▼" } else { "▶" };
-    if link_button(ui, &format!("{}  Advanced Options", expand_icon)).clicked() {
+fn show_presets(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
+    let current = app.settings.preset();
+
+    egui::Frame::none()
+        .fill(SURFACE)
+        .rounding(10.0)
+        .stroke(egui::Stroke::new(1.0, LINE))
+        .inner_margin(egui::Margin::symmetric(3.0, 3.0))
+        .show(ui, |ui| {
+            let width = ((ui.available_width() - 4.0) / 3.0).max(60.0);
+            ui.horizontal(|ui| {
+                for preset in [Preset::High, Preset::Balanced, Preset::Small] {
+                    let selected = current == preset;
+                    let btn = egui::Button::new(
+                        egui::RichText::new(preset.label())
+                            .color(if selected { ACCENT } else { TEXT_2 })
+                            .size(11.5)
+                            .strong(),
+                    )
+                    .fill(if selected { WHITE } else { egui::Color32::TRANSPARENT })
+                    .stroke(if selected {
+                        egui::Stroke::new(1.0, LINE)
+                    } else {
+                        egui::Stroke::NONE
+                    })
+                    .rounding(7.0)
+                    .min_size(egui::vec2(width, 30.0));
+                    if ui.add(btn).clicked() {
+                        app.settings.apply_preset(preset);
+                    }
+                }
+            });
+        });
+
+    if current == Preset::Custom {
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new("当前为自定义参数（已微调预设）")
+                .color(MUTED)
+                .size(10.5),
+        );
+    }
+}
+
+fn show_slider(ui: &mut egui::Ui, label: &str, value: &mut u8, hint: &str) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).color(TEXT).size(12.0).strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(
+                egui::RichText::new(format!("{}", *value))
+                    .color(ACCENT)
+                    .size(12.0)
+                    .strong(),
+            );
+        });
+    });
+    ui.add(
+        egui::Slider::new(value, 0..=100)
+            .show_value(false)
+            .trailing_fill(true),
+    );
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(hint).color(MUTED).size(10.5));
+}
+
+fn show_toggle_row(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
+    components::hairline(ui);
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new("兼容模式")
+                    .color(TEXT)
+                    .size(12.0)
+                    .strong(),
+            );
+            ui.add_space(3.0);
+            ui.label(
+                egui::RichText::new("把非 MP4 视频转为 H.264 MP4，并同步更新包内声明")
+                    .color(MUTED)
+                    .size(10.5),
+            );
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            components::toggle_switch(ui, &mut app.settings.video_convert_to_h264);
+        });
+    });
+}
+
+fn show_advanced(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
+    let marker = if app.show_advanced { "- " } else { "+ " };
+    let label = format!("{}高级设置", marker);
+    if components::text_link(ui, &label).clicked() {
         app.show_advanced = !app.show_advanced;
     }
 
-    if app.show_advanced {
-        ui.add_space(8.0);
-        let adv_panel = egui::Frame::none()
-            .fill(egui::Color32::from_rgb(247, 248, 250))
-            .rounding(10.0)
-            .inner_margin(egui::Margin::symmetric(14.0, 12.0))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut app.settings.image_max_width_enabled, "Limit image width");
-                    if app.settings.image_max_width_enabled {
-                        ui.add(
-                            egui::DragValue::new(&mut app.settings.image_max_width)
-                                .range(320..=7680)
-                                .speed(10)
-                                .suffix(" px"),
-                        );
-                    }
-                });
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut app.settings.video_max_resolution_enabled, "Limit video height");
-                    if app.settings.video_max_resolution_enabled {
-                        ui.add(
-                            egui::DragValue::new(&mut app.settings.video_max_height)
-                                .range(240..=4320)
-                                .speed(10)
-                                .suffix(" p"),
-                        );
-                    }
-                });
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Output dir")
-                            .color(TEXT_SECONDARY)
-                            .size(12.0),
-                    );
-                    if let Some(ref dir) = app.output_dir {
-                        ui.colored_label(TEXT_SECONDARY, dir.to_string_lossy().as_ref());
-                    } else {
-                        ui.colored_label(TEXT_SECONDARY, "(same as input)");
-                    }
-                    if ui.button("Choose").clicked() {
-                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                            app.output_dir = Some(dir);
-                        }
-                    }
-                    if app.output_dir.is_some() && ui.button("Reset").clicked() {
-                        app.output_dir = None;
-                    }
-                });
-            });
-        let _ = adv_panel;
+    if !app.show_advanced {
+        return;
     }
-}
 
-/// Slider row with label, slider, and value display.
-fn slider_row(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut u8,
-    range: std::ops::RangeInclusive<u8>,
-) {
-    ui.horizontal(|ui| {
+    ui.add_space(8.0);
+    components::card(ui, WHITE, LINE, |ui| {
         ui.label(
-            egui::RichText::new(label)
-                .color(TEXT_PRIMARY)
-                .size(13.0),
-        );
-        ui.add_space(8.0);
-        let slider = egui::Slider::new(value, range)
-            .show_value(false)
-            .trailing_fill(true);
-        ui.add(slider);
-        ui.label(
-            egui::RichText::new(format!("{}", *value))
-                .color(BLUE)
-                .size(13.0)
+            egui::RichText::new("GIF 动图")
+                .color(TEXT)
+                .size(11.5)
                 .strong(),
         );
+        ui.add_space(4.0);
+        ui.checkbox(&mut app.settings.gif_palette_optimize, "优化调色板");
+        ui.checkbox(&mut app.settings.gif_frame_drop, "抽取帧以降低体积");
+        if app.settings.gif_frame_drop {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("目标帧率").color(TEXT_2).size(11.0));
+                ui.add(
+                    egui::DragValue::new(&mut app.settings.gif_target_fps)
+                        .range(1..=60)
+                        .speed(1)
+                        .suffix(" fps"),
+                );
+            });
+        }
+
+        ui.add_space(8.0);
+        components::hairline(ui);
+        ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut app.settings.image_max_width_enabled, "限制图片宽度");
+            if app.settings.image_max_width_enabled {
+                ui.add(
+                    egui::DragValue::new(&mut app.settings.image_max_width)
+                        .range(320..=7680)
+                        .speed(10)
+                        .suffix(" px"),
+                );
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(
+                &mut app.settings.video_max_resolution_enabled,
+                "限制视频高度",
+            );
+            if app.settings.video_max_resolution_enabled {
+                ui.add(
+                    egui::DragValue::new(&mut app.settings.video_max_height)
+                        .range(240..=4320)
+                        .speed(10)
+                        .suffix(" p"),
+                );
+            }
+        });
+
+        ui.add_space(8.0);
+        components::hairline(ui);
+        ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("输出目录").color(TEXT_2).size(11.0));
+            let text = app
+                .output_dir
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "与源文件相同".into());
+            ui.label(
+                egui::RichText::new(shorten(&text, 26))
+                    .color(MUTED)
+                    .size(10.5),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if app.output_dir.is_some() && components::small_button(ui, "重置").clicked() {
+                    app.output_dir = None;
+                }
+                if components::small_button(ui, "选择").clicked() {
+                    if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                        app.output_dir = Some(dir);
+                    }
+                }
+            });
+        });
     });
 }
 
-/// Preset pill button — subtle outline for unselected, filled for selected.
-fn preset_pill(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
-    let (fill, color) = if selected {
-        (BLUE, egui::Color32::WHITE)
-    } else {
-        (egui::Color32::from_rgb(236, 241, 251), BLUE)
-    };
-    let btn = egui::Button::new(
-        egui::RichText::new(label).color(color).size(12.0).strong(),
-    )
-    .fill(fill)
-    .rounding(20.0)
-    .min_size(egui::vec2(0.0, 28.0));
-    ui.add(btn)
-}
-
-/// Glass-style toggle.
-fn glass_toggle(ui: &mut egui::Ui, label: &str, is_on: bool) -> egui::Response {
-    let bg = if is_on {
-        BLUE
-    } else {
-        egui::Color32::from_rgb(220, 222, 227)
-    };
-    let text_color = if is_on {
-        egui::Color32::WHITE
-    } else {
-        TEXT_SECONDARY
-    };
-    let btn = egui::Button::new(
-        egui::RichText::new(label)
-            .color(text_color)
-            .size(12.0),
-    )
-    .fill(bg)
-    .rounding(14.0)
-    .min_size(egui::vec2(0.0, 26.0));
-    ui.add(btn)
-}
-
-/// Text-styled link button.
-fn link_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    egui::Frame::none()
-        .fill(egui::Color32::TRANSPARENT)
-        .rounding(6.0)
-        .inner_margin(egui::Margin::symmetric(4.0, 2.0))
-        .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(label)
-                    .color(BLUE)
-                    .size(12.0),
-            )
-        })
-        .inner
-}
-
-fn video_quality_label(quality: u8) -> &'static str {
-    match quality {
-        0..=20 => "Very low quality, smallest file",
-        21..=40 => "Low quality",
-        41..=60 => "Balanced",
-        61..=80 => "High quality",
-        81..=100 => "Very high quality, largest file",
-        _ => "",
+fn shorten(text: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        return text.to_owned();
     }
+    let head: String = chars[..max_chars.saturating_sub(5)].iter().collect();
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("{}…{}", head, tail)
 }

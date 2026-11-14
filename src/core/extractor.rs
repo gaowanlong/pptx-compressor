@@ -51,7 +51,7 @@ pub fn extract_pptx(pptx_path: &Path, extract_dir: &Path) -> io::Result<Vec<Medi
     if archive.len() > MAX_ENTRIES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("PPTX has too many entries ({})", archive.len()),
+            format!("PPTX 条目数过多（{}），已拒绝解压", archive.len()),
         ));
     }
 
@@ -75,14 +75,14 @@ pub fn extract_pptx(pptx_path: &Path, extract_dir: &Path) -> io::Result<Vec<Medi
         if compressed > 0 && declared / compressed.max(1) > MAX_SINGLE_RATIO {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Suspicious compression ratio in {}", entry.name()),
+                format!("检测到异常压缩比（{}），疑似 ZIP 炸弹", entry.name()),
             ));
         }
         declared_total = declared_total.saturating_add(declared);
         if declared_total > MAX_TOTAL_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "PPTX uncompressed size exceeds the 4 GiB safety limit",
+                "PPTX 解压后体积超过 4 GiB 安全上限",
             ));
         }
 
@@ -112,7 +112,7 @@ pub fn extract_pptx(pptx_path: &Path, extract_dir: &Path) -> io::Result<Vec<Medi
             if written_total > MAX_TOTAL_BYTES {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "PPTX extraction exceeded the 4 GiB safety limit",
+                    "解压数据量超过 4 GiB 安全上限",
                 ));
             }
         }
@@ -152,7 +152,7 @@ fn scan_media(extract_dir: &Path) -> Vec<MediaInfo> {
         }
     }
 
-    media_files.sort_by(|a, b| b.original_size.cmp(&a.original_size));
+    media_files.sort_by_key(|m| std::cmp::Reverse(m.original_size));
     media_files
 }
 
@@ -206,7 +206,7 @@ pub fn repack_pptx(extract_dir: &Path, output_path: &Path) -> io::Result<()> {
         }
         let relative = file_path
             .strip_prefix(extract_dir)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+            .map_err(io::Error::other)?
             .to_string_lossy()
             .replace('\\', "/");
 
@@ -217,18 +217,18 @@ pub fn repack_pptx(extract_dir: &Path, output_path: &Path) -> io::Result<()> {
                 format!("{}/", relative)
             };
             zip.add_directory(dir_name, deflate_options)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
         } else {
             let is_media = relative.starts_with("ppt/media/") && is_compressed_format(file_path);
             let options = if is_media { stored_options } else { deflate_options };
             zip.start_file(relative, options)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
             let mut f = fs::File::open(file_path)?;
             io::copy(&mut f, &mut zip)?;
         }
     }
 
-    let finished = zip.finish().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let finished = zip.finish().map_err(io::Error::other)?;
     drop(finished);
 
     if let Err(e) = validate_pptx_zip(&tmp_path) {
@@ -260,8 +260,7 @@ fn validate_pptx_zip(path: &Path) -> io::Result<()> {
 /// `Target="docProps/thumbnail.jpeg"`). Used on single-line OOXML parts.
 fn remove_tags_containing(content: &str, needle: &str, start: &str, end: &str) -> String {
     let mut result = content.to_string();
-    loop {
-        let Some(pos) = result.find(needle) else { break };
+    while let Some(pos) = result.find(needle) {
         let Some(tag_start) = result[..pos].rfind(start) else { break };
         let Some(rel_end) = result[pos + needle.len()..].find(end) else { break };
         let tag_end = pos + needle.len() + rel_end + end.len();

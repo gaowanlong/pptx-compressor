@@ -1,27 +1,47 @@
-//! Main application state and egui App implementation.
+//! 应用状态机与整体布局。
 //!
-//! Apple-native glassmorphism layout with blue primary color.
-//! Layout is stable — Media Files section is always shown to prevent
-//! visual shifts when state transitions from Idle to Ready.
+//! 界面按「左侧主导区（源文件 + 媒体清单）/ 右侧从属区（方案 + 结果）/ 底部固定操作条」
+//! 组织：主操作按钮在所有状态下都固定在右下角，状态反馈集中在标题栏与右栏。
+//! 所有耗时工作（解包、压缩）都在后台线程完成，GUI 只通过消息通道接收结果。
 
 use crate::core::{CompressMessage, CompressionSettings, MediaInfo};
-use crate::ui::{file_panel, media_list, progress, settings};
+use crate::ui::{components, file_panel, media_list, progress, settings};
 use crate::utils::ffmpeg;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 
-// ── Apple-native glassmorphism color palette ─────────────────
-pub const BLUE: egui::Color32 = egui::Color32::from_rgb(0, 122, 255);
-pub const GLASS_WHITE: egui::Color32 = egui::Color32::from_rgba_premultiplied(255, 255, 255, 245);
-pub const BG: egui::Color32 = egui::Color32::from_rgb(242, 242, 244);
-pub const TEXT_PRIMARY: egui::Color32 = egui::Color32::from_rgb(29, 29, 31);
-pub const TEXT_SECONDARY: egui::Color32 = egui::Color32::from_rgb(134, 134, 139);
-pub const GREEN: egui::Color32 = egui::Color32::from_rgb(52, 199, 89);
-pub const ORANGE: egui::Color32 = egui::Color32::from_rgb(255, 149, 0);
-pub const RED: egui::Color32 = egui::Color32::from_rgb(255, 59, 48);
+// ── 设计令牌：纯白底、单一强调色 ────────────────────────────
+pub const WHITE: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
+pub const SURFACE: egui::Color32 = egui::Color32::from_rgb(247, 248, 250);
+pub const SURFACE_2: egui::Color32 = egui::Color32::from_rgb(251, 252, 253);
+pub const LINE: egui::Color32 = egui::Color32::from_rgb(231, 233, 238);
+pub const LINE_SOFT: egui::Color32 = egui::Color32::from_rgb(240, 241, 244);
+pub const TEXT: egui::Color32 = egui::Color32::from_rgb(27, 29, 33);
+pub const TEXT_2: egui::Color32 = egui::Color32::from_rgb(91, 96, 105);
+pub const MUTED: egui::Color32 = egui::Color32::from_rgb(138, 143, 152);
+pub const ACCENT: egui::Color32 = egui::Color32::from_rgb(47, 107, 255);
+pub const ACCENT_DARK: egui::Color32 = egui::Color32::from_rgb(34, 85, 222);
+pub const ACCENT_SOFT: egui::Color32 = egui::Color32::from_rgb(238, 243, 255);
+pub const GREEN: egui::Color32 = egui::Color32::from_rgb(18, 161, 80);
+pub const GREEN_SOFT: egui::Color32 = egui::Color32::from_rgb(234, 247, 239);
+pub const AMBER: egui::Color32 = egui::Color32::from_rgb(200, 127, 10);
+pub const AMBER_SOFT: egui::Color32 = egui::Color32::from_rgb(255, 246, 229);
+pub const RED: egui::Color32 = egui::Color32::from_rgb(214, 69, 69);
+pub const RED_SOFT: egui::Color32 = egui::Color32::from_rgb(253, 238, 238);
 
-/// Current application state.
+const STORAGE_KEY: &str = "pptx-compressor.state.v1";
+
+/// 退出时写入磁盘的用户偏好。新增字段会走 `serde(default)`，旧文件仍可读。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PersistedState {
+    pub settings: CompressionSettings,
+    pub output_dir: Option<PathBuf>,
+    pub show_advanced: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
     Idle,
@@ -32,7 +52,36 @@ pub enum AppState {
     Error,
 }
 
-/// The main application struct holding all UI and processing state.
+impl AppState {
+    /// 标题栏状态胶囊文案与配色。
+    pub fn badge(self) -> (&'static str, egui::Color32, egui::Color32) {
+        match self {
+            AppState::Idle => ("等待文件", MUTED, SURFACE),
+            AppState::Loading => ("正在解析", ACCENT, ACCENT_SOFT),
+            AppState::Ready => ("已就绪", GREEN, GREEN_SOFT),
+            AppState::Compressing => ("压缩中", ACCENT, ACCENT_SOFT),
+            AppState::Done => ("已完成", GREEN, GREEN_SOFT),
+            AppState::Error => ("处理失败", RED, RED_SOFT),
+        }
+    }
+
+    pub fn badge_text(self, progress_pct: u8) -> String {
+        let (label, _, _) = self.badge();
+        if self == AppState::Compressing {
+            format!("{} {}%", label, progress_pct)
+        } else {
+            label.to_owned()
+        }
+    }
+}
+
+/// 后台解包线程回传的消息。`generation` 用于丢弃过期结果（用户中途换了文件）。
+pub enum LoadMessage {
+    Loaded(u64, Vec<MediaInfo>, PathBuf, tempfile::TempDir),
+    Failed(u64, String),
+}
+
+/// 主应用状态。
 pub struct PptxCompressorApp {
     pub state: AppState,
     pub input_files: Vec<PathBuf>,
@@ -42,20 +91,27 @@ pub struct PptxCompressorApp {
     pub _temp_dir: Option<tempfile::TempDir>,
     pub extract_dir: Option<PathBuf>,
     pub rx: Option<mpsc::Receiver<CompressMessage>>,
+    pub load_rx: Option<mpsc::Receiver<LoadMessage>>,
+    pub load_generation: u64,
     pub cancel_flag: Arc<AtomicBool>,
     pub progress_current: usize,
     pub progress_total: usize,
     pub progress_file: String,
     pub result_original: u64,
     pub result_compressed: u64,
-    pub error_messages: Vec<String>,
+    /// 活动日志：非致命错误、跳过原因、清理告警都在这里可见。
+    pub activity_log: Vec<String>,
     pub ffmpeg_available: bool,
+    pub ffmpeg_path: Option<String>,
     pub show_advanced: bool,
+    pub show_only_compressible: bool,
     pub output_path: Option<PathBuf>,
+    pub font_ok: bool,
 }
 
 impl Default for PptxCompressorApp {
     fn default() -> Self {
+        let ffmpeg_path = ffmpeg::find_ffmpeg();
         Self {
             state: AppState::Idle,
             input_files: Vec::new(),
@@ -65,411 +121,122 @@ impl Default for PptxCompressorApp {
             _temp_dir: None,
             extract_dir: None,
             rx: None,
+            load_rx: None,
+            load_generation: 0,
             cancel_flag: Arc::new(AtomicBool::new(false)),
             progress_current: 0,
             progress_total: 0,
             progress_file: String::new(),
             result_original: 0,
             result_compressed: 0,
-            error_messages: Vec::new(),
-            ffmpeg_available: ffmpeg::find_ffmpeg().is_some(),
+            activity_log: Vec::new(),
+            ffmpeg_available: ffmpeg_path.is_some(),
+            ffmpeg_path,
             show_advanced: false,
+            show_only_compressible: false,
             output_path: None,
+            font_ok: true,
         }
     }
-}
-
-impl eframe::App for PptxCompressorApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.process_messages();
-
-        // ── macOS-style unified header ──────────────────────
-        egui::TopBottomPanel::top("header_panel")
-            .frame(egui::Frame::none().fill(BLUE))
-            .show(ctx, |ui| {
-                let header_max = ui.max_rect();
-                ui.add_space(10.0);
-
-                ui.horizontal(|ui| {
-                    ui.add_space(16.0);
-
-                    // App icon
-                    ui.label(
-                        egui::RichText::new("📦")
-                            .size(22.0),
-                    );
-                    ui.add_space(10.0);
-
-                    // Title
-                    ui.heading(
-                        egui::RichText::new("PPTX Compressor")
-                            .color(egui::Color32::WHITE)
-                            .size(20.0)
-                            .strong(),
-                    );
-
-                    // Spacer pushes everything to the right
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(16.0);
-
-                        // Version badge (glass-like capsule)
-                        let version = egui::Frame::none()
-                            .fill(egui::Color32::from_rgba_premultiplied(255, 255, 255, 25))
-                            .rounding(12.0)
-                            .inner_margin(egui::Margin::symmetric(12.0, 4.0))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                                        .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 180))
-                                        .size(11.0),
-                                );
-                            });
-                        let _ = version;
-
-                        if !self.ffmpeg_available {
-                            ui.add_space(12.0);
-                            ui.colored_label(
-                                ORANGE,
-                                "⚠ FFmpeg not found",
-                            );
-                        }
-                    });
-                });
-                ui.add_space(10.0);
-
-                // Thin highlight line at bottom of header
-                let painter = ui.painter();
-                painter.line_segment(
-                    [
-                        egui::pos2(header_max.left(), header_max.bottom()),
-                        egui::pos2(header_max.right(), header_max.bottom()),
-                    ],
-                    egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 30)));
-
-            });
-
-        // ── Glassmorphism content area ──────────────────────
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(BG))
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                ui.add_space(16.0);
-
-                // Action bar (above File Selection — primary CTA)
-                action_bar(ui, self);
-
-                ui.add_space(12.0);
-
-                // Card 1: File Selection (always visible, stable height)
-                glass_card(ui, "File Selection", BLUE, Some(210.0), |ui| {
-                    file_panel::show(ui, self);
-                });
-
-                ui.add_space(12.0);
-
-                // Card 2+3: Settings + Progress side-by-side (equal width via columns)
-                ui.columns(2, |columns| {
-                    glass_card(&mut columns[0], "Compression Settings", BLUE, Some(210.0), |ui| {
-                        settings::show(ui, self);
-                    });
-                    glass_card(&mut columns[1], "Progress", BLUE, Some(210.0), |ui| {
-                        progress::show(ui, self);
-                    });
-                });
-
-                ui.add_space(12.0);
-
-                // Card 4: Media Files (always visible; empty/populated handled inside)
-                glass_card(ui, "Media Files", BLUE, Some(250.0), |ui| {
-                    media_list::show(ui, self);
-                });
-
-                ui.add_space(16.0);
-                    }); // ScrollArea
-            }); // CentralPanel
-
-        if self.state == AppState::Compressing {
-            ctx.request_repaint();
-        }
-    }
-}
-
-/// Render a glassmorphism-style card with frosted-glass aesthetic.
-///
-/// When `content_height` is `Some(h)`, the content area is allocated at a fixed height
-/// and wrapped in a `ScrollArea` so that overflow scrolls instead of expanding the card.
-/// This keeps card sizes consistent across state transitions (empty ↔ loaded, etc.).
-fn glass_card(
-    ui: &mut egui::Ui,
-    title: &str,
-    accent_color: egui::Color32,
-    content_height: Option<f32>,
-    add_contents: impl FnOnce(&mut egui::Ui),
-) {
-    // Capture full available width before entering Frame; used inside
-    // to set a minimum width on the content Ui so the card never shrinks.
-    let desired_width = ui.available_width();
-
-    // Glass card: semi-transparent white, light border, generous rounding
-    let card_frame = egui::Frame::none()
-        .fill(GLASS_WHITE)
-        .rounding(14.0)
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(235, 235, 240)))
-        .inner_margin(egui::Margin::symmetric(18.0, 14.0))
-        .show(ui, |ui| {
-            // Accent dot + section title
-            ui.horizontal(|ui| {
-                let dot = egui::Frame::none()
-                    .fill(accent_color)
-                    .rounding(3.0)
-                    .inner_margin(egui::Margin::symmetric(5.0, 5.0))
-                    .show(ui, |_| {});
-                let _ = dot;
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(title)
-                        .color(TEXT_PRIMARY)
-                        .size(15.0)
-                        .strong(),
-                );
-            });
-
-            // Separator line below title
-            ui.add_space(6.0);
-            let sep = ui.min_rect();
-            let painter = ui.painter();
-            painter.line_segment(
-                [
-                    egui::pos2(sep.left(), sep.top()),
-                    egui::pos2(sep.right(), sep.top()),
-                ],
-                egui::Stroke::new(1.0, egui::Color32::from_rgb(240, 240, 245)),
-            );
-            ui.add_space(10.0);
-
-            // Force the content area's min_rect to span the full card width,
-            // preventing the Frame from shrinking when content transitions
-            // between states (e.g. drop zone with icon ↔ compact file info).
-            // Frame.inner_margin = symmetric(18, 14) → 36px horizontal total.
-            ui.set_min_width(desired_width - 36.0);
-
-            // Content area
-            if let Some(h) = content_height {
-                // Fixed-size scrollable area: always h tall, scrolls if content overflows.
-                // id_source gives each card a unique scroll state (critical for nested ScrollAreas).
-                // auto_shrink(false) ensures the ScrollArea always fills the full h allocation
-                // even when content is smaller, so the Frame's size stays consistent.
-                egui::ScrollArea::vertical()
-                    .id_salt(title)
-                    .auto_shrink([false; 2])
-                    .min_scrolled_height(h)
-                    .max_height(h)
-                    .show(ui, |ui| {
-                        add_contents(ui);
-                    });
-            } else {
-                // Auto-height: original behavior
-                add_contents(ui);
-            }
-        });
-    let _ = card_frame;
-}
-
-/// Contextual action bar — shows the primary action button above File Selection.
-/// Always visible with stable height to prevent layout jumps.
-fn action_bar(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
-    ui.set_min_height(50.0);
-
-    match app.state {
-        AppState::Idle => {
-            ui.horizontal(|ui| {
-                ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new("Open a PPTX file to begin")
-                        .color(TEXT_SECONDARY)
-                        .size(12.0),
-                );
-            });
-        }
-
-        AppState::Loading => {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("Extracting PPTX...")
-                        .color(TEXT_PRIMARY)
-                        .size(13.0)
-                        .strong(),
-                );
-            });
-        }
-
-        AppState::Ready => {
-            egui::Frame::none()
-                .fill(GLASS_WHITE)
-                .rounding(14.0)
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(235, 235, 240)))
-                .inner_margin(egui::Margin::symmetric(18.0, 10.0))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!("{} media files ready", app.media_files.len()))
-                                .color(TEXT_PRIMARY)
-                                .size(13.0),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let btn = egui::Button::new(
-                                egui::RichText::new("▶  Start Compression")
-                                    .color(egui::Color32::WHITE)
-                                    .size(13.0)
-                                    .strong(),
-                            )
-                            .fill(BLUE)
-                            .rounding(10.0)
-                            .min_size(egui::vec2(0.0, 34.0));
-                            if ui.add(btn).clicked() {
-                                app.start_compression();
-                            }
-                        });
-                    });
-                });
-        }
-
-        AppState::Compressing => {
-            let pct = if app.progress_total > 0 {
-                app.progress_current as f32 / app.progress_total as f32 * 100.0
-            } else {
-                0.0
-            };
-            egui::Frame::none()
-                .fill(GLASS_WHITE)
-                .rounding(14.0)
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(235, 235, 240)))
-                .inner_margin(egui::Margin::symmetric(18.0, 10.0))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!("Compressing... ({:.0}%)", pct))
-                                .color(TEXT_PRIMARY)
-                                .size(13.0),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let btn = egui::Button::new(
-                                egui::RichText::new("Cancel")
-                                    .color(TEXT_SECONDARY)
-                                    .size(12.0),
-                            )
-                            .fill(egui::Color32::TRANSPARENT)
-                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(210, 212, 217)))
-                            .rounding(8.0)
-                            .min_size(egui::vec2(0.0, 30.0));
-                            if ui.add(btn).clicked() {
-                                app.cancel_flag.store(true, Ordering::Relaxed);
-                            }
-                        });
-                    });
-                });
-        }
-
-        AppState::Done => {
-            let saved = app.result_original.saturating_sub(app.result_compressed);
-            let pct = if app.result_original > 0 {
-                (saved as f64 / app.result_original as f64 * 100.0) as u8
-            } else {
-                0
-            };
-            egui::Frame::none()
-                .fill(GLASS_WHITE)
-                .rounding(14.0)
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(235, 235, 240)))
-                .inner_margin(egui::Margin::symmetric(18.0, 10.0))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!("✓ Compression complete — saved {}%", pct))
-                                .color(GREEN)
-                                .size(13.0)
-                                .strong(),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let btn = egui::Button::new(
-                                egui::RichText::new("Process another file")
-                                    .color(egui::Color32::WHITE)
-                                    .size(12.0)
-                                    .strong(),
-                            )
-                            .fill(BLUE)
-                            .rounding(10.0)
-                            .min_size(egui::vec2(0.0, 32.0));
-                            if ui.add(btn).clicked() {
-                                *app = PptxCompressorApp::default();
-                            }
-                        });
-                    });
-                });
-        }
-
-        AppState::Error => {
-            egui::Frame::none()
-                .fill(GLASS_WHITE)
-                .rounding(14.0)
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(235, 235, 240)))
-                .inner_margin(egui::Margin::symmetric(18.0, 10.0))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Compression failed")
-                                .color(RED)
-                                .size(13.0)
-                                .strong(),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let btn = egui::Button::new(
-                                egui::RichText::new("↻  Try Again")
-                                    .color(egui::Color32::WHITE)
-                                    .size(12.0)
-                                    .strong(),
-                            )
-                            .fill(RED)
-                            .rounding(10.0)
-                            .min_size(egui::vec2(0.0, 32.0));
-                            if ui.add(btn).clicked() {
-                                app.error_messages.clear();
-                                let source = app.input_files.first().cloned();
-                                if let Some(path) = source {
-                                    crate::ui::file_panel::load_pptx(app, Some(&path));
-                                } else {
-                                    app.state = AppState::Idle;
-                                }
-                            }
-                        });
-                    });
-                });
-        }
-    }
-}
-
-/// Pick a non-existing `_compressed[_N].pptx` path instead of overwriting.
-fn unique_output_path(dir: &Path, stem: &str) -> PathBuf {
-    let base = dir.join(format!("{}_compressed.pptx", stem));
-    if !base.exists() {
-        return base;
-    }
-    for i in 2..1000 {
-        let candidate = dir.join(format!("{}_compressed_{}.pptx", stem, i));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    base
 }
 
 impl PptxCompressorApp {
+    /// 由 eframe 创建，恢复上次保存的偏好。
+    pub fn new(cc: &eframe::CreationContext<'_>, font_ok: bool) -> Self {
+        let mut app = Self {
+            font_ok,
+            ..Self::default()
+        };
+        if let Some(storage) = cc.storage {
+            if let Some(raw) = storage.get_string(STORAGE_KEY) {
+                match serde_json::from_str::<PersistedState>(&raw) {
+                    Ok(saved) => {
+                        app.settings = saved.settings;
+                        app.output_dir = saved.output_dir;
+                        app.show_advanced = saved.show_advanced;
+                    }
+                    Err(e) => eprintln!("忽略损坏的偏好设置：{}", e),
+                }
+            }
+        }
+        app
+    }
+
+    pub fn progress_pct(&self) -> u8 {
+        if self.progress_total == 0 {
+            0
+        } else {
+            ((self.progress_current.min(self.progress_total) as f32
+                / self.progress_total as f32)
+                * 100.0) as u8
+        }
+    }
+
+    /// 清空当前文件与结果，但保留用户偏好（设置、输出目录、折叠状态）。
+    pub fn reset_for_new_file(&mut self) {
+        self.state = AppState::Idle;
+        self.input_files.clear();
+        self.media_files.clear();
+        self._temp_dir = None;
+        self.extract_dir = None;
+        self.rx = None;
+        self.load_rx = None;
+        self.cancel_flag.store(false, Ordering::Relaxed);
+        self.progress_current = 0;
+        self.progress_total = 0;
+        self.progress_file.clear();
+        self.result_original = 0;
+        self.result_compressed = 0;
+        self.activity_log.clear();
+        self.output_path = None;
+    }
+
+    pub fn log(&mut self, message: impl Into<String>) {
+        if self.activity_log.len() < 50 {
+            self.activity_log.push(message.into());
+        }
+    }
+
     fn process_messages(&mut self) {
+        // 1) 解包结果
+        let mut loaded = None;
+        let mut load_failed = None;
+        if let Some(rx) = &self.load_rx {
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    LoadMessage::Loaded(gen, media, dir, temp) if gen == self.load_generation => {
+                        loaded = Some((media, dir, temp));
+                        load_failed = None;
+                    }
+                    LoadMessage::Failed(gen, err) if gen == self.load_generation => {
+                        load_failed = Some(err);
+                        loaded = None;
+                    }
+                    // 过期结果：tempdir 在这里被丢弃并自动清理
+                    _ => {}
+                }
+            }
+        }
+        if let Some((media, dir, temp)) = loaded {
+            let count = media.len();
+            self.media_files = media;
+            self.extract_dir = Some(dir);
+            self._temp_dir = Some(temp);
+            self.state = AppState::Ready;
+            self.load_rx = None;
+            self.log(format!("已解析文稿，共发现 {} 个媒体文件", count));
+        } else if let Some(err) = load_failed {
+            self.state = AppState::Error;
+            self.load_rx = None;
+            self.log(format!("读取文稿失败：{}", err));
+        }
+
+        // 2) 压缩进度。消息在持有 receiver 借用期间只做字段级更新，
+        //    状态切换与日志写入放到借用结束后，避免 &mut self 冲突。
         let mut cancelled = false;
+        let mut finished = None;
+        let mut fatal = false;
+        let mut new_logs: Vec<String> = Vec::new();
         if let Some(rx) = &self.rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
@@ -487,32 +254,35 @@ impl PptxCompressorApp {
                         self.progress_file = file;
                     }
                     CompressMessage::Finished(original, compressed) => {
-                        self.result_original = original;
-                        self.result_compressed = compressed;
-                        self.state = AppState::Done;
-                        self.progress_file = String::new();
+                        finished = Some((original, compressed));
                     }
-                    CompressMessage::Error(msg) => {
-                        if self.error_messages.len() < 50 {
-                            self.error_messages.push(msg);
-                        }
-                    }
+                    CompressMessage::Error(msg) => new_logs.push(msg),
                     CompressMessage::FatalError(msg) => {
-                        self.error_messages.push(msg);
-                        self.state = AppState::Error;
+                        new_logs.push(msg);
+                        fatal = true;
                     }
                     CompressMessage::Cancelled => cancelled = true,
                 }
             }
         }
+        for msg in new_logs {
+            self.log(msg);
+        }
+        if let Some((original, compressed)) = finished {
+            self.result_original = original;
+            self.result_compressed = compressed;
+            self.state = AppState::Done;
+            self.progress_file.clear();
+        }
+        if fatal {
+            self.state = AppState::Error;
+        }
 
-        // Handle after the receiver borrow ends: discard the partially
-        // modified extraction tree and re-open the source, so a retry always
-        // starts from unmodified bytes.
+        // 取消后丢弃已被修改的解包目录，重新从源文件解压，避免二次压缩
+        // 基于已经损失画质的数据。
         if cancelled {
             self.rx = None;
             self.cancel_flag.store(false, Ordering::Relaxed);
-            self.error_messages.clear();
             self.media_files.clear();
             self.extract_dir = None;
             self._temp_dir = None;
@@ -520,12 +290,10 @@ impl PptxCompressorApp {
             self.progress_total = 0;
             self.progress_file.clear();
             self.state = AppState::Idle;
-            self.error_messages.push(
-                "Compression cancelled — no output was written. Source reloaded.".into(),
-            );
             let source = self.input_files.first().cloned();
             if let Some(path) = source {
-                crate::ui::file_panel::load_pptx(self, Some(&path));
+                file_panel::load_pptx(self, Some(&path));
+                self.log("已取消，未生成输出文件；已重新载入源文件");
             } else {
                 self.input_files.clear();
             }
@@ -538,7 +306,7 @@ impl PptxCompressorApp {
         }
 
         self.state = AppState::Compressing;
-        self.error_messages.clear();
+        self.activity_log.clear();
         self.cancel_flag.store(false, Ordering::Relaxed);
 
         let (tx, rx) = mpsc::channel();
@@ -550,17 +318,13 @@ impl PptxCompressorApp {
         let cancel = self.cancel_flag.clone();
 
         let input = &self.input_files[0];
-        let original_pptx_size = std::fs::metadata(input)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let original_pptx_size = std::fs::metadata(input).map(|m| m.len()).unwrap_or(0);
         let stem = input.file_stem().unwrap_or_default().to_string_lossy();
         let dir = self
             .output_dir
             .clone()
             .unwrap_or_else(|| input.parent().unwrap_or(input.as_path()).to_path_buf());
-        // Never silently overwrite an existing result.
         let output_path = unique_output_path(&dir, &stem);
-
         self.output_path = Some(output_path.clone());
 
         std::thread::spawn(move || {
@@ -578,4 +342,288 @@ impl PptxCompressorApp {
             }
         });
     }
+}
+
+impl eframe::App for PptxCompressorApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.process_messages();
+
+        self.render_titlebar(ctx);
+        self.render_actionbar(ctx);
+
+        let window_width = ctx.screen_rect().width();
+        let primary_width = (window_width * 0.60).clamp(380.0, (window_width - 300.0).max(300.0));
+
+        egui::SidePanel::left("workspace_primary")
+            .exact_width(primary_width)
+            .resizable(false)
+            .frame(
+                egui::Frame::none()
+                    .fill(WHITE)
+                    .inner_margin(egui::Margin::symmetric(26.0, 20.0)),
+            )
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        file_panel::show(ui, self);
+                        ui.add_space(22.0);
+                        media_list::show(ui, self);
+                    });
+            });
+
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::none()
+                    .fill(SURFACE_2)
+                    .inner_margin(egui::Margin::symmetric(24.0, 20.0)),
+            )
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        settings::show(ui, self);
+                        ui.add_space(18.0);
+                        components::hairline(ui);
+                        ui.add_space(14.0);
+                        progress::show(ui, self);
+                        ui.add_space(16.0);
+                        progress::show_notes(ui, self);
+                    });
+            });
+
+        if matches!(self.state, AppState::Loading | AppState::Compressing) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let state = PersistedState {
+            settings: self.settings.clone(),
+            output_dir: self.output_dir.clone(),
+            show_advanced: self.show_advanced,
+        };
+        if let Ok(raw) = serde_json::to_string(&state) {
+            storage.set_string(STORAGE_KEY, raw);
+        }
+    }
+}
+
+impl PptxCompressorApp {
+    fn render_titlebar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("titlebar")
+            .exact_height(56.0)
+            .frame(
+                egui::Frame::none()
+                    .fill(WHITE)
+                    .inner_margin(egui::Margin::symmetric(20.0, 0.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    // 品牌标记
+                    egui::Frame::none()
+                        .fill(ACCENT)
+                        .rounding(8.0)
+                        .inner_margin(egui::Margin::symmetric(8.0, 5.0))
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new("P")
+                                    .color(WHITE)
+                                    .size(14.0)
+                                    .strong(),
+                            );
+                        });
+                    ui.add_space(9.0);
+                    ui.label(
+                        egui::RichText::new("PPTX 压缩器")
+                            .color(TEXT)
+                            .size(14.0)
+                            .strong(),
+                    );
+                    ui.add_space(6.0);
+                    components::version_badge(ui, env!("CARGO_PKG_VERSION"));
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (_, fg, bg) = self.state.badge();
+                        components::status_pill(ui, &self.state.badge_text(self.progress_pct()), fg, bg);
+                        if !self.ffmpeg_available {
+                            ui.add_space(8.0);
+                            components::badge(ui, "FFmpeg 未就绪", AMBER, AMBER_SOFT);
+                        }
+                        if !self.font_ok {
+                            ui.add_space(8.0);
+                            components::badge(ui, "缺少中文字体", AMBER, AMBER_SOFT);
+                        }
+                    });
+                });
+
+                let rect = ui.max_rect();
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(rect.left(), rect.bottom()),
+                        egui::pos2(rect.right(), rect.bottom()),
+                    ],
+                    egui::Stroke::new(1.0, LINE),
+                );
+            });
+    }
+
+    fn render_actionbar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("actionbar")
+            .exact_height(72.0)
+            .frame(
+                egui::Frame::none()
+                    .fill(WHITE)
+                    .inner_margin(egui::Margin::symmetric(24.0, 0.0)),
+            )
+            .show(ctx, |ui| {
+                let rect = ui.max_rect();
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(rect.left(), rect.top()),
+                        egui::pos2(rect.right(), rect.top()),
+                    ],
+                    egui::Stroke::new(1.0, LINE),
+                );
+
+                let (main, sub) = self.action_hint();
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new(main).color(TEXT_2).size(11.5));
+                        ui.add_space(3.0);
+                        ui.label(egui::RichText::new(sub).color(MUTED).size(10.5));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        self.render_actions(ui);
+                    });
+                });
+            });
+    }
+
+    fn action_hint(&self) -> (String, String) {
+        match self.state {
+            AppState::Idle => (
+                "尚未选择文件".into(),
+                "拖入 PPTX 或点击「选择 PPTX 文件」开始".into(),
+            ),
+            AppState::Loading => (
+                "正在后台解析文稿，界面保持可操作".into(),
+                "大文件解压不会阻塞窗口".into(),
+            ),
+            AppState::Ready => {
+                let enabled = self
+                    .media_files
+                    .iter()
+                    .filter(|m| m.enabled && m.media_type.is_compressible())
+                    .count();
+                let skipped = self.media_files.len().saturating_sub(enabled);
+                (
+                    format!("将处理 {} 个媒体文件，跳过 {} 个", enabled, skipped),
+                    format!("输出到 {}", self.output_hint()),
+                )
+            }
+            AppState::Compressing => (
+                "正在重编码媒体并重新打包，可随时取消".into(),
+                "取消后丢弃临时文件，原文件保持不变".into(),
+            ),
+            AppState::Done => (
+                "压缩完成，输出文件已通过完整性校验".into(),
+                self.output_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            ),
+            AppState::Error => (
+                "处理未完成，请查看右侧日志定位原因".into(),
+                "源文件未被修改，可更换文件或重试".into(),
+            ),
+        }
+    }
+
+    fn output_hint(&self) -> String {
+        let Some(input) = self.input_files.first() else {
+            return "（未选择源文件）".into();
+        };
+        let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+        let dir = self
+            .output_dir
+            .clone()
+            .unwrap_or_else(|| input.parent().unwrap_or(input.as_path()).to_path_buf());
+        unique_output_path(&dir, &stem).to_string_lossy().into_owned()
+    }
+
+    fn render_actions(&mut self, ui: &mut egui::Ui) {
+        // 主按钮永远在最右、尺寸固定，避免状态切换时按钮位置跳动。
+        match self.state {
+            AppState::Idle | AppState::Loading => {
+                let _ = components::primary_button(ui, "开始压缩", false);
+            }
+            AppState::Ready => {
+                if components::primary_button(ui, "开始压缩", true).clicked() {
+                    self.start_compression();
+                }
+                ui.add_space(8.0);
+                if components::secondary_button(ui, "移除文件").clicked() {
+                    self.reset_for_new_file();
+                }
+            }
+            AppState::Compressing => {
+                let _ = components::primary_button(ui, "压缩中…", false);
+                ui.add_space(8.0);
+                if components::secondary_button(ui, "取消").clicked() {
+                    self.cancel_flag.store(true, Ordering::Relaxed);
+                }
+            }
+            AppState::Done => {
+                if components::primary_button(ui, "再压一个", true).clicked() {
+                    self.reset_for_new_file();
+                }
+                ui.add_space(8.0);
+                if components::secondary_button(ui, "打开结果文件夹").clicked() {
+                    if let Some(path) = self.output_path.clone() {
+                        if let Some(parent) = path.parent() {
+                            let _ = components::open_folder(parent);
+                        }
+                    }
+                }
+                ui.add_space(8.0);
+                if components::secondary_button(ui, "复制路径").clicked() {
+                    if let Some(path) = self.output_path.clone() {
+                        ui.output_mut(|o| o.copied_text = path.to_string_lossy().into_owned());
+                        self.log("输出路径已复制到剪贴板");
+                    }
+                }
+            }
+            AppState::Error => {
+                if components::primary_button(ui, "重新设置并重试", true).clicked() {
+                    let source = self.input_files.first().cloned();
+                    if let Some(path) = source {
+                        file_panel::load_pptx(self, Some(&path));
+                    } else {
+                        self.reset_for_new_file();
+                    }
+                }
+                ui.add_space(8.0);
+                if components::secondary_button(ui, "更换文件").clicked() {
+                    self.reset_for_new_file();
+                }
+            }
+        }
+    }
+}
+
+/// 从不覆盖已有结果：`<原名>_compressed.pptx`，重名时追加序号。
+fn unique_output_path(dir: &Path, stem: &str) -> PathBuf {
+    let base = dir.join(format!("{}_compressed.pptx", stem));
+    if !base.exists() {
+        return base;
+    }
+    for i in 2..1000 {
+        let candidate = dir.join(format!("{}_compressed_{}.pptx", stem, i));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    base
 }

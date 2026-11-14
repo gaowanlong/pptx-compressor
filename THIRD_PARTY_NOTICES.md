@@ -22,9 +22,20 @@
 
 ### 分发风险与建议
 
-GPLv3 要求随二进制提供对应源码或有效的源码获取方式，且 nonfree 构建本身不允许再分发。当前发布包附带本声明并不等于已完全满足合规要求。**建议后续版本改用仅启用 LGPL 组件的 FFmpeg 构建**（移除 `--enable-gpl` / `--enable-nonfree` 与 x264，改用 libopenh264 等 LGPL 兼容编码器），或改为运行时由用户自行提供 FFmpeg。
+GPLv3 要求随二进制提供对应源码或有效的源码获取方式，且 nonfree 构建本身不允许再分发。当前发布包附带本声明并不等于已完全满足合规要求。**建议改用仅启用 LGPL 组件的 FFmpeg 构建**（移除 `--enable-gpl` / `--enable-nonfree` 与 x264，改用 libopenh264 等 LGPL 兼容编码器），或改为运行时由用户自行提供 FFmpeg。
 
-在替换之前，使用者与再分发者需自行评估并承担相应的许可证义务。项目维护者已在 `CHANGELOG.md` 的「已知限制」中记录该项。
+### v1.1.0 起：替换随包 FFmpeg 的方法
+
+`package.sh` 支持通过环境变量指定自备的 FFmpeg 二进制，打包时会覆盖默认文件，无需改动仓库内容：
+
+```bash
+FFMPEG_MACOS=/path/to/lgpl-ffmpeg ./package.sh macos
+FFMPEG_WINDOWS=/path/to/lgpl-ffmpeg.exe ./package.sh windows
+```
+
+替换后请同步更新本文件的「版本 / 构建配置 / 许可证 / 来源」四栏，并在应用界面右下角的合规提示中说明新的授权情况。程序运行时按「随包二进制 → 开发资源目录 → 用户数据目录 → 系统 PATH」的顺序查找 FFmpeg，因此用户也可以直接安装系统 FFmpeg 而不使用随包版本。
+
+注意：**默认仓库内的二进制仍是 GPL + nonfree 构建，本版只是提供了可替换路径，并未完成许可证整改**。在替换之前，使用者与再分发者需自行评估并承担相应的许可证义务；该项也已记录在 `CHANGELOG.md` 的「已知限制」中。
 
 ## 其他 Rust 依赖
 

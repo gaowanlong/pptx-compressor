@@ -1,25 +1,32 @@
 #!/usr/bin/env bash
-# Package PPTX Compressor for distribution.
+# 打包 PPTX 压缩器发布版。
 #
-# Usage:
-#   ./package.sh                  # macOS release (default)
+# 用法：
+#   ./package.sh                  # macOS release（默认）
 #   ./package.sh macos            # macOS release
 #   ./package.sh macos debug      # macOS debug
-#   ./package.sh windows          # Windows cross-compile + package
-#   ./package.sh all              # Both platforms
+#   ./package.sh windows          # Windows 交叉编译 + 打包
+#   ./package.sh all              # 两个平台
+#
+# 替换 FFmpeg（例如换成 LGPL 合规构建）：
+#   FFMPEG_MACOS=/path/to/lgpl-ffmpeg ./package.sh macos
+#   FFMPEG_WINDOWS=/path/to/lgpl-ffmpeg.exe ./package.sh windows
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 if [ -z "$VERSION" ]; then
-    echo "Cannot read version from Cargo.toml" >&2
+    echo "无法从 Cargo.toml 读取版本号" >&2
     exit 1
 fi
 
+FFMPEG_MACOS="${FFMPEG_MACOS:-resources/ffmpeg/macos/ffmpeg}"
+FFMPEG_WINDOWS="${FFMPEG_WINDOWS:-resources/ffmpeg/windows/ffmpeg.exe}"
+
 require_file() {
     if [ ! -f "$1" ]; then
-        echo "Missing required file: $1" >&2
+        echo "缺少必需文件：$1" >&2
         exit 1
     fi
 }
@@ -38,7 +45,7 @@ make_app_bundle() {
     <key>CFBundleExecutable</key><string>pptx-compressor</string>
     <key>CFBundleIdentifier</key><string>com.gaowanlong.pptx-compressor</string>
     <key>CFBundleName</key><string>PPTX Compressor</string>
-    <key>CFBundleDisplayName</key><string>PPTX Compressor</string>
+    <key>CFBundleDisplayName</key><string>PPTX 压缩器</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
     <key>CFBundleVersion</key><string>${VERSION}</string>
@@ -60,27 +67,27 @@ package_macos() {
     local binary="target/$profile/pptx-compressor"
     local archive="target/PPTX-Compressor-v${VERSION}-macOS.zip"
 
-    echo "→ [macOS] Building ($profile)..."
+    echo "→ [macOS] 构建（${profile}）..."
     cargo build --"$profile"
     require_file "$binary"
-    require_file resources/ffmpeg/macos/ffmpeg
+    require_file "$FFMPEG_MACOS"
     require_file THIRD_PARTY_NOTICES.md
 
-    echo "→ [macOS] Creating app bundle..."
+    echo "→ [macOS] 创建 .app 骨架..."
     rm -rf "$app_bundle"
     make_app_bundle "$app_bundle"
     cp "$binary" "$app_bundle/Contents/MacOS/pptx-compressor"
-    cp resources/ffmpeg/macos/ffmpeg "$app_bundle/Contents/Resources/ffmpeg"
+    cp "$FFMPEG_MACOS" "$app_bundle/Contents/Resources/ffmpeg"
     chmod +x "$app_bundle/Contents/MacOS/pptx-compressor" "$app_bundle/Contents/Resources/ffmpeg"
     cp README.md THIRD_PARTY_NOTICES.md CHANGELOG.md "$app_bundle/Contents/Resources/"
 
-    echo "→ [macOS] Re-signing..."
+    echo "→ [macOS] 重新签名..."
     codesign --force --deep --sign - "$app_bundle"
 
-    echo "→ [macOS] Creating ZIP..."
+    echo "→ [macOS] 生成 ZIP..."
     rm -f "$archive"
     ditto -c -k --sequesterRsrc --keepParent "$app_bundle" "$archive"
-    echo "✓ [macOS] Done: $archive"
+    echo "✓ [macOS] 完成：$archive"
 }
 
 package_windows() {
@@ -89,28 +96,28 @@ package_windows() {
     local out_dir="target/windows-dist"
     local archive="target/PPTX-Compressor-v${VERSION}-Windows.zip"
 
-    echo "→ [Windows] Cross-compiling ($profile)..."
+    echo "→ [Windows] 交叉编译（${profile}）..."
     cargo xwin build --target x86_64-pc-windows-msvc --"$profile"
     require_file "$exe"
-    require_file resources/ffmpeg/windows/ffmpeg.exe
+    require_file "$FFMPEG_WINDOWS"
     require_file THIRD_PARTY_NOTICES.md
 
-    echo "→ [Windows] Packaging..."
+    echo "→ [Windows] 打包..."
     rm -rf "$out_dir"
     mkdir -p "$out_dir"
     cp "$exe" "$out_dir/"
-    cp resources/ffmpeg/windows/ffmpeg.exe "$out_dir/"
+    cp "$FFMPEG_WINDOWS" "$out_dir/ffmpeg.exe"
     cp README.md THIRD_PARTY_NOTICES.md CHANGELOG.md "$out_dir/"
 
     local prev="$PWD"
     (cd "$out_dir" && zip -q -9 -r "$prev/$archive" .)
     rm -rf "$out_dir"
-    echo "✓ [Windows] Done: $archive"
+    echo "✓ [Windows] 完成：$archive"
 }
 
 case "${1:-macos}" in
     macos)   package_macos "${2:-release}" ;;
     windows) package_windows "${2:-release}" ;;
     all)     package_macos "${2:-release}"; package_windows "${2:-release}" ;;
-    *)       echo "Usage: $0 {macos|windows|all} [release|debug]"; exit 1 ;;
+    *)       echo "用法：$0 {macos|windows|all} [release|debug]"; exit 1 ;;
 esac

@@ -67,9 +67,9 @@ fn unique_target(original: &Path, new_ext: Option<&str>) -> PathBuf {
 }
 
 fn install_candidate(candidate: &Path, original: &Path, target: &Path) -> Result<(), String> {
-    fs::copy(candidate, target).map_err(|e| format!("Failed to install candidate: {}", e))?;
+    fs::copy(candidate, target).map_err(|e| format!("写入压缩结果失败：{}", e))?;
     if target != original {
-        fs::remove_file(original).map_err(|e| format!("Failed to remove old media: {}", e))?;
+        fs::remove_file(original).map_err(|e| format!("删除旧媒体文件失败：{}", e))?;
     }
     Ok(())
 }
@@ -88,13 +88,13 @@ fn send(tx: &Sender<CompressMessage>, msg: CompressMessage) {
 pub fn run_pipeline(
     extract_dir: &Path,
     output_path: &Path,
-    media_files: &mut Vec<MediaInfo>,
+    media_files: &mut [MediaInfo],
     settings: &CompressionSettings,
     original_pptx_size: u64,
     tx: Sender<CompressMessage>,
     cancel: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let work_dir = tempfile::tempdir().map_err(|e| format!("Failed to create work dir: {}", e))?;
+    let work_dir = tempfile::tempdir().map_err(|e| format!("创建工作目录失败：{}", e))?;
 
     let compressible: Vec<usize> = media_files
         .iter()
@@ -130,7 +130,7 @@ pub fn run_pipeline(
             media_files[idx].compressed_size = original_size;
             send(&tx, CompressMessage::StatusUpdate(idx, MediaStatus::Skipped, original_size));
             send(&tx, CompressMessage::Error(format!(
-                "Skipped {}: enable H.264 conversion to process non-MP4 video",
+                "已跳过 {}：处理非 MP4 视频需开启兼容模式",
                 file_name
             )));
             continue;
@@ -141,7 +141,7 @@ pub fn run_pipeline(
         if let Err(e) = fs::copy(&original_path, &backup) {
             media_files[idx].compressed_size = original_size;
             send(&tx, CompressMessage::StatusUpdate(idx, MediaStatus::Failed, original_size));
-            send(&tx, CompressMessage::Error(format!("Failed to back up {}: {}", file_name, e)));
+            send(&tx, CompressMessage::Error(format!("备份 {} 失败：{}", file_name, e)));
             continue;
         }
 
@@ -168,7 +168,7 @@ pub fn run_pipeline(
                 }
                 media_files[idx].compressed_size = original_size;
                 send(&tx, CompressMessage::StatusUpdate(idx, MediaStatus::Failed, original_size));
-                send(&tx, CompressMessage::Error(format!("Failed to compress {}: {}", file_name, e)));
+                send(&tx, CompressMessage::Error(format!("压缩 {} 失败：{}", file_name, e)));
                 continue;
             }
         };
@@ -188,7 +188,7 @@ pub fn run_pipeline(
             let _ = fs::copy(&backup, &original_path);
             media_files[idx].compressed_size = original_size;
             send(&tx, CompressMessage::StatusUpdate(idx, MediaStatus::Failed, original_size));
-            send(&tx, CompressMessage::Error(format!("Failed to replace {}: {}", file_name, e)));
+            send(&tx, CompressMessage::Error(format!("替换 {} 失败：{}", file_name, e)));
             continue;
         }
 
@@ -217,19 +217,19 @@ pub fn run_pipeline(
 
     if !renames.is_empty() {
         crate::core::extractor::rewrite_media_references(extract_dir, &renames)
-            .map_err(|e| format!("Failed to update OOXML media references: {}", e))?;
+            .map_err(|e| format!("更新 OOXML 媒体引用失败：{}", e))?;
     }
 
     for problem in xml_clean::clean_xml_files(extract_dir) {
-        send(&tx, CompressMessage::Error(format!("XML cleanup: {}", problem)));
+        send(&tx, CompressMessage::Error(format!("XML 清理：{}", problem)));
     }
     for problem in crate::core::extractor::strip_thumbnails(extract_dir) {
-        send(&tx, CompressMessage::Error(format!("Thumbnail cleanup: {}", problem)));
+        send(&tx, CompressMessage::Error(format!("缩略图清理：{}", problem)));
     }
 
-    send(&tx, CompressMessage::Progress(total, total, "Repacking PPTX...".into()));
+    send(&tx, CompressMessage::Progress(total, total, "正在重新打包…".into()));
     crate::core::extractor::repack_pptx(extract_dir, output_path)
-        .map_err(|e| format!("Failed to repack PPTX: {}", e))?;
+        .map_err(|e| format!("重新打包 PPTX 失败：{}", e))?;
 
     let output_size = fs::metadata(output_path).map(|m| m.len()).unwrap_or(0);
     send(&tx, CompressMessage::Finished(original_pptx_size, output_size));

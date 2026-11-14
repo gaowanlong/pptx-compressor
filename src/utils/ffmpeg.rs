@@ -110,7 +110,7 @@ pub fn find_ffmpeg() -> Option<String> {
             #[cfg(not(target_os = "windows"))]
             {
                 use std::os::unix::fs::PermissionsExt;
-                if path.metadata().ok().map_or(false, |m| m.permissions().mode() & 0o111 == 0) {
+                if path.metadata().ok().is_some_and(|m| m.permissions().mode() & 0o111 == 0) {
                     continue;
                 }
             }
@@ -138,7 +138,7 @@ pub fn download_ffmpeg(progress: impl Fn(u64, u64)) -> Result<PathBuf, String> {
         .join("pptx-compressor")
         .join("ffmpeg");
 
-    std::fs::create_dir_all(&app_dir).map_err(|e| format!("Failed to create directory: {e}"))?;
+    std::fs::create_dir_all(&app_dir).map_err(|e| format!("创建目录失败：{e}"))?;
 
     let zip_path = app_dir.join("ffmpeg.zip");
 
@@ -156,7 +156,7 @@ pub fn download_ffmpeg(progress: impl Fn(u64, u64)) -> Result<PathBuf, String> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to launch curl: {e}"))?;
+        .map_err(|e| format!("启动下载工具失败：{e}"))?;
 
     // Poll file size periodically for progress reporting
     let sleep_dur = Duration::from_millis(200);
@@ -174,7 +174,7 @@ pub fn download_ffmpeg(progress: impl Fn(u64, u64)) -> Result<PathBuf, String> {
                 if !status.success() {
                     let stderr_msg = String::from_utf8_lossy(&stderr_buf);
                     return Err(format!(
-                        "curl download failed (exit: {}): {}",
+                        "下载失败（退出码 {}）：{}",
                         status.code().unwrap_or(-1),
                         stderr_msg.trim()
                     ));
@@ -183,7 +183,8 @@ pub fn download_ffmpeg(progress: impl Fn(u64, u64)) -> Result<PathBuf, String> {
             }
             Ok(None) => {
                 poll_count += 1;
-                if poll_count % metadata_interval == 0 {
+                if poll_count >= metadata_interval {
+                    poll_count = 0;
                     if let Ok(meta) = std::fs::metadata(&zip_path) {
                         progress(meta.len(), total_size);
                     }
@@ -191,7 +192,7 @@ pub fn download_ffmpeg(progress: impl Fn(u64, u64)) -> Result<PathBuf, String> {
                 std::thread::sleep(sleep_dur);
             }
             Err(e) => {
-                return Err(format!("Failed to wait for curl: {e}"));
+                return Err(format!("等待下载结束失败：{e}"));
             }
         }
     }
@@ -211,10 +212,10 @@ pub fn download_ffmpeg(progress: impl Fn(u64, u64)) -> Result<PathBuf, String> {
     // -------- Extract via zip crate --------
     let extract_dir = app_dir.join("extracted");
     let zip_file =
-        std::fs::File::open(&zip_path).map_err(|e| format!("Failed to open zip: {e}"))?;
+        std::fs::File::open(&zip_path).map_err(|e| format!("打开下载包失败：{e}"))?;
 
     let mut archive =
-        zip::ZipArchive::new(zip_file).map_err(|e| format!("Failed to read zip archive: {e}"))?;
+        zip::ZipArchive::new(zip_file).map_err(|e| format!("读取下载包失败：{e}"))?;
 
     std::fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
     for i in 0..archive.len() {
@@ -234,7 +235,7 @@ pub fn download_ffmpeg(progress: impl Fn(u64, u64)) -> Result<PathBuf, String> {
 
     // Find binary in extracted contents
     let binary = find_file_recursive(&extract_dir, FFMPEG_BIN)
-        .ok_or(format!("{} not found in archive", FFMPEG_BIN))?;
+        .ok_or(format!("下载包中未找到 {}", FFMPEG_BIN))?;
 
     let target = app_dir.join(FFMPEG_BIN);
     std::fs::copy(&binary, &target).map_err(|e| e.to_string())?;

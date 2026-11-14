@@ -15,9 +15,9 @@ const MAX_ALLOC: u64 = 256 * 1024 * 1024;
 
 fn decode_bounded(path: &Path) -> Result<image::DynamicImage, String> {
     let mut reader = ImageReader::open(path)
-        .map_err(|e| format!("Failed to open image {}: {}", path.display(), e))?
+        .map_err(|e| format!("打开图片 {} 失败：{}", path.display(), e))?
         .with_guessed_format()
-        .map_err(|e| format!("Failed to detect image format {}: {}", path.display(), e))?;
+        .map_err(|e| format!("识别图片格式 {} 失败：{}", path.display(), e))?;
 
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_DIMENSION);
@@ -27,7 +27,7 @@ fn decode_bounded(path: &Path) -> Result<image::DynamicImage, String> {
 
     reader
         .decode()
-        .map_err(|e| format!("Failed to decode image {}: {}", path.display(), e))
+        .map_err(|e| format!("解码图片 {} 失败：{}", path.display(), e))
 }
 
 fn resize_if_needed(img: image::DynamicImage, settings: &CompressionSettings) -> image::DynamicImage {
@@ -57,10 +57,10 @@ pub fn compress_jpeg(
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, settings.image_quality);
     encoder
         .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
-        .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
+        .map_err(|e| format!("JPEG 编码失败：{}", e))?;
 
     std::fs::write(candidate, buffer.into_inner())
-        .map_err(|e| format!("Failed to write JPEG candidate: {}", e))?;
+        .map_err(|e| format!("写入 JPEG 候选文件失败：{}", e))?;
 
     Ok(CompressCandidate { path: candidate.to_path_buf(), new_extension: None })
 }
@@ -80,10 +80,10 @@ pub fn compress_png(
         PngEncoder::new_with_quality(&mut buffer, CompressionType::Best, FilterType::Adaptive);
     encoder
         .write_image(img.as_bytes(), img.width(), img.height(), img.color().into())
-        .map_err(|e| format!("Failed to encode PNG: {}", e))?;
+        .map_err(|e| format!("PNG 编码失败：{}", e))?;
 
     std::fs::write(candidate, buffer.into_inner())
-        .map_err(|e| format!("Failed to write PNG candidate: {}", e))?;
+        .map_err(|e| format!("写入 PNG 候选文件失败：{}", e))?;
 
     Ok(CompressCandidate { path: candidate.to_path_buf(), new_extension: None })
 }

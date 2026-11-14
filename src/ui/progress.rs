@@ -1,309 +1,262 @@
-//! Progress and results panel — Apple-style with glass elements.
+//! 右侧从属区下半部：进度、结果、活动日志与环境提示。
 
-use crate::app::{AppState, PptxCompressorApp, BLUE, TEXT_PRIMARY, TEXT_SECONDARY, GREEN, RED};
-use std::sync::atomic::Ordering;
-
-/// Glass-style filled button.
-fn glass_button(ui: &mut egui::Ui, label: &str, color: egui::Color32) -> egui::Response {
-    let btn = egui::Button::new(
-        egui::RichText::new(label)
-            .color(egui::Color32::WHITE)
-            .size(13.0)
-            .strong(),
-    )
-    .fill(color)
-    .rounding(10.0)
-    .min_size(egui::vec2(0.0, 34.0));
-    ui.add(btn)
-}
-
-/// Outline button.
-fn outline_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    let btn = egui::Button::new(
-        egui::RichText::new(label)
-            .color(TEXT_SECONDARY)
-            .size(12.0),
-    )
-    .fill(egui::Color32::TRANSPARENT)
-    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(210, 212, 217)))
-    .rounding(8.0)
-    .min_size(egui::vec2(0.0, 30.0));
-    ui.add(btn)
-}
+use crate::app::{
+    AppState, PptxCompressorApp, AMBER, AMBER_SOFT, GREEN, GREEN_SOFT, LINE,
+    MUTED, RED, RED_SOFT, TEXT, TEXT_2, WHITE,
+};
+use crate::ui::components;
 
 pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
-    // Reserve consistent height so idle/ready/compressing/done/error states
-    // all occupy the same vertical space — prevents layout jump mid-processing.
-    ui.set_min_height(210.0);
+    let meta = match app.state {
+        AppState::Done => "最终结果",
+        AppState::Error => "含错误",
+        _ => "实时更新",
+    };
+    components::section_head(ui, "进度与结果", meta, |_| {});
 
     match app.state {
-        AppState::Idle => {
-            ui.horizontal(|ui| {
-                ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new("Select a PPTX file to begin.")
-                        .color(TEXT_SECONDARY)
-                        .size(12.0),
-                );
+        AppState::Idle | AppState::Loading => {
+            let hint = if app.state == AppState::Loading {
+                "正在后台解析文稿，完成后这里会显示媒体清单与预估。"
+            } else {
+                "选择一个 PPTX 后，这里会显示处理进度与体积对比。"
+            };
+            components::card(ui, WHITE, LINE, |ui| {
+                ui.label(egui::RichText::new(hint).color(MUTED).size(11.5));
             });
         }
-
-        AppState::Loading => {
-            ui.horizontal(|ui| {
-                ui.spinner();
+        AppState::Ready => {
+            let total = app
+                .media_files
+                .iter()
+                .filter(|m| m.enabled && m.media_type.is_compressible())
+                .count();
+            let skipped = app.media_files.len().saturating_sub(total);
+            components::card(ui, WHITE, LINE, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("准备就绪").color(TEXT).size(11.5).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(format!("0 / {}", total))
+                                .color(MUTED)
+                                .size(11.0),
+                        );
+                    });
+                });
+                ui.add_space(8.0);
+                components::progress_bar(ui, 0.0);
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new("Extracting PPTX...")
-                        .color(TEXT_PRIMARY)
-                        .size(13.0)
-                        .strong(),
+                    egui::RichText::new(format!(
+                        "共 {} 个媒体，其中 {} 个可压缩、{} 个将原样保留。点击右下角开始。",
+                        app.media_files.len(),
+                        total,
+                        skipped
+                    ))
+                    .color(TEXT_2)
+                    .size(11.0),
                 );
             });
         }
-
-        AppState::Ready => {
-            ui.horizontal(|ui| {
-                ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new(format!("Ready — {} media files to compress", app.media_files.len()))
-                        .color(TEXT_PRIMARY)
-                        .size(12.0),
-                );
-            });
-        }
-
         AppState::Compressing => {
-            let progress = if app.progress_total > 0 {
-                app.progress_current as f32 / app.progress_total as f32
-            } else {
-                0.0
-            };
-
-            // Apple-style progress bar
-            let bar_h = 6.0;
-            let avail_w = ui.available_width() - 4.0;
-            let (_bar_id, bar_rect) = ui.allocate_space(egui::vec2(avail_w.max(100.0), bar_h + 24.0));
-
-            let track = egui::Rect::from_min_size(
-                egui::pos2(bar_rect.left(), bar_rect.top() + 12.0),
-                egui::vec2(avail_w.max(100.0), bar_h),
-            );
-            // Track
-            ui.painter().rect(
-                track,
-                egui::Rounding::same(3.0),
-                egui::Color32::from_rgb(225, 226, 230),
-                egui::Stroke::NONE,
-            );
-            // Fill
-            if progress > 0.0 {
-                let fill_w = (track.width() * progress).max(4.0);
-                let fill = egui::Rect::from_min_size(track.min, egui::vec2(fill_w, bar_h));
-                ui.painter().rect(
-                    fill,
-                    egui::Rounding::same(3.0),
-                    BLUE,
-                    egui::Stroke::NONE,
-                );
-            }
-
-            // Percentage label
-            let pct = (progress * 100.0) as u8;
-            let label_pos = egui::pos2(track.left(), track.top());
-            ui.painter().text(
-                egui::pos2(label_pos.x, label_pos.y),
-                egui::Align2::LEFT_TOP,
-                format!("{}%", pct),
-                egui::FontId::proportional(12.0),
-                TEXT_PRIMARY,
-            );
-
-            // File name and cancel row
-            ui.horizontal(|ui| {
-                ui.add_space(2.0);
-                if !app.progress_file.is_empty() {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "({}/{}) {}",
-                            app.progress_current.min(app.progress_total),
-                            app.progress_total,
-                            app.progress_file
-                        ))
-                        .color(TEXT_SECONDARY)
-                        .size(11.0),
-                    );
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if outline_button(ui, "Cancel").clicked() {
-                        app.cancel_flag.store(true, Ordering::Relaxed);
-                    }
+            let pct = app.progress_pct();
+            let total = app.progress_total;
+            let current = app.progress_current.min(total);
+            let file = app.progress_file.clone();
+            components::card(ui, WHITE, LINE, |ui| {
+                ui.horizontal(|ui| {
+                    let text = if file.is_empty() {
+                        "准备处理媒体…".to_owned()
+                    } else {
+                        format!("正在处理 {}", file)
+                    };
+                    ui.label(egui::RichText::new(text).color(TEXT).size(11.5).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(format!("{} / {} · {}%", current, total, pct))
+                                .color(TEXT_2)
+                                .size(11.0),
+                        );
+                    });
                 });
+                ui.add_space(8.0);
+                components::progress_bar(ui, pct as f32 / 100.0);
             });
         }
-
         AppState::Done => {
-            let saved = app.result_original.saturating_sub(app.result_compressed);
-            let pct = if app.result_original > 0 {
-                (saved as f64 / app.result_original as f64 * 100.0) as u8
+            let from = app.result_original;
+            let to = app.result_compressed;
+            let saved = from.saturating_sub(to);
+            let pct = if from > 0 {
+                (saved as f64 / from as f64 * 100.0) as u8
             } else {
                 0
             };
-
-            // Success card — green glassmorphism
-            let card = egui::Frame::none()
-                .fill(egui::Color32::from_rgba_premultiplied(235, 252, 240, 250))
-                .rounding(12.0)
-                .stroke(egui::Stroke::new(1.0, GREEN.linear_multiply(0.25)))
-                .inner_margin(egui::Margin::symmetric(18.0, 16.0))
-                .show(ui, |ui| {
-                    // Title
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("✓  Compression Complete")
-                                .color(GREEN)
-                                .size(16.0)
-                                .strong(),
-                        );
-                    });
-
-                    ui.add_space(10.0);
-
-                    // Stats row
-                    let stat_bg = egui::Color32::from_rgba_premultiplied(245, 253, 248, 240);
-                    egui::Frame::none()
-                        .fill(stat_bg)
-                        .rounding(8.0)
-                        .inner_margin(egui::Margin::symmetric(14.0, 10.0))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new("Original ")
-                                        .color(TEXT_SECONDARY)
-                                        .size(12.0),
-                                );
-                                ui.label(
-                                    egui::RichText::new(bytesize::ByteSize(app.result_original).to_string())
-                                        .color(TEXT_PRIMARY)
-                                        .size(13.0)
-                                        .strong(),
-                                );
-                                ui.separator();
-                                ui.label(
-                                    egui::RichText::new("Compressed ")
-                                        .color(TEXT_SECONDARY)
-                                        .size(12.0),
-                                );
-                                ui.label(
-                                    egui::RichText::new(bytesize::ByteSize(app.result_compressed).to_string())
-                                        .color(GREEN)
-                                        .size(13.0)
-                                        .strong(),
-                                );
-                                ui.separator();
-                                let savings_color = if pct >= 30 { GREEN } else { BLUE };
-                                ui.label(
-                                    egui::RichText::new(format!("Saved {}%", pct))
-                                        .color(savings_color)
-                                        .size(14.0)
-                                        .strong(),
-                                );
-                            });
-                        });
-
+            components::card(ui, WHITE, LINE, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(components::fmt_size(from))
+                            .color(MUTED)
+                            .size(15.0)
+                            .strikethrough(),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("→").color(MUTED).size(14.0));
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(components::fmt_size(to))
+                            .color(GREEN)
+                            .size(26.0)
+                            .strong(),
+                    );
+                });
+                ui.add_space(8.0);
+                components::badge(
+                    ui,
+                    &format!("节省 {}% · {}", pct, components::fmt_size(saved)),
+                    GREEN,
+                    GREEN_SOFT,
+                );
+                ui.add_space(10.0);
+                ui.label(
+                    egui::RichText::new(
+                        "输出包已回读校验通过，原文件未改动；变大的媒体自动保留原件。",
+                    )
+                    .color(TEXT_2)
+                    .size(10.5),
+                );
+                if let Some(path) = app.output_path.clone() {
                     ui.add_space(8.0);
-
-                    // Output path + actions
+                    ui.label(
+                        egui::RichText::new(path.to_string_lossy().into_owned())
+                            .color(MUTED)
+                            .size(10.0),
+                    );
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if let Some(ref path) = app.output_path {
-                            ui.label(
-                                egui::RichText::new(path.to_string_lossy().as_ref())
-                                    .color(TEXT_SECONDARY)
-                                    .size(10.0),
-                            );
+                        if components::small_button(ui, "打开输出文件").clicked() {
+                            let _ = components::open_folder(&path);
                         }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if glass_button(ui, "📂  Open Folder", BLUE).clicked() {
-                                if let Some(ref path) = app.output_path {
-                                    if let Some(parent) = path.parent() {
-                                        let _ = open_folder(parent);
-                                    }
-                                } else if let Some(file) = app.input_files.first() {
-                                    if let Some(parent) = file.parent() {
-                                        let _ = open_folder(parent);
-                                    }
-                                }
-                            }
-                        });
-                    });
-                });
-            let _ = card;
-        }
-
-        AppState::Error => {
-            // Error card — red glassmorphism
-            let card = egui::Frame::none()
-                .fill(egui::Color32::from_rgba_premultiplied(255, 240, 238, 250))
-                .rounding(12.0)
-                .stroke(egui::Stroke::new(1.0, RED.linear_multiply(0.25)))
-                .inner_margin(egui::Margin::symmetric(18.0, 16.0))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("✕  Compression Failed")
-                                .color(RED)
-                                .size(16.0)
-                                .strong(),
-                        );
-                    });
-
-                    ui.add_space(10.0);
-
-                    for err in &app.error_messages {
-                        egui::Frame::none()
-                            .fill(egui::Color32::from_rgb(255, 245, 243))
-                            .rounding(6.0)
-                            .inner_margin(egui::Margin::symmetric(10.0, 6.0))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(err)
-                                        .color(RED)
-                                        .size(12.0),
-                                );
+                        if components::small_button(ui, "复制路径").clicked() {
+                            ui.output_mut(|o| {
+                                o.copied_text = path.to_string_lossy().into_owned();
                             });
-                        ui.add_space(4.0);
+                            app.log("输出路径已复制到剪贴板");
+                        }
+                    });
+                }
+            });
+        }
+        AppState::Error => {
+            components::card(ui, RED_SOFT, RED.linear_multiply(0.3), |ui| {
+                ui.label(
+                    egui::RichText::new("处理未完成")
+                        .color(RED)
+                        .size(12.0)
+                        .strong(),
+                );
+                ui.add_space(8.0);
+                if app.activity_log.is_empty() {
+                    ui.label(
+                        egui::RichText::new("未提供具体原因，请更换文件后重试。")
+                            .color(RED)
+                            .size(11.0),
+                    );
+                } else {
+                    for line in app.activity_log.iter().rev().take(6) {
+                        ui.label(
+                            egui::RichText::new(format!("• {}", line))
+                                .color(RED)
+                                .size(10.5),
+                        );
                     }
-
-                });
-            let _ = card;
+                }
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("源文件未被修改，可查看日志后重试，或关闭兼容模式再试一次。")
+                        .color(TEXT_2)
+                        .size(10.5),
+                );
+            });
         }
     }
 
-    // Non-fatal problems must be visible in every state, not only on error.
-    if app.state != AppState::Error && !app.error_messages.is_empty() {
-        ui.add_space(10.0);
-        ui.label(egui::RichText::new("Activity log").color(TEXT_SECONDARY).size(11.0));
-        for msg in app.error_messages.iter().rev().take(3) {
-            ui.label(
-                egui::RichText::new(format!("• {}", msg))
-                    .color(TEXT_SECONDARY)
-                    .size(10.5),
-            );
-        }
+    if app.state != AppState::Error && !app.activity_log.is_empty() {
+        ui.add_space(12.0);
+        show_log(ui, app, 4);
     }
 }
 
-fn open_folder(path: &std::path::Path) -> std::io::Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer").arg(path).spawn()?;
+fn show_log(ui: &mut egui::Ui, app: &PptxCompressorApp, limit: usize) {
+    if app.activity_log.is_empty() {
+        return;
     }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open").arg(path).spawn()?;
+    ui.add_space(8.0);
+    ui.label(
+        egui::RichText::new("活动日志")
+            .color(MUTED)
+            .size(10.5)
+            .strong(),
+    );
+    for line in app.activity_log.iter().rev().take(limit) {
+        ui.label(
+            egui::RichText::new(format!("• {}", line))
+                .color(TEXT_2)
+                .size(10.0),
+        );
     }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open").arg(path).spawn()?;
+}
+
+/// 风险告知与环境状态，位于右栏底部。
+pub fn show_notes(ui: &mut egui::Ui, app: &PptxCompressorApp) {
+    components::notice(
+        ui,
+        "含宏（.pptm）或数字签名的演示文稿，压缩后签名会失效；建议先另存副本。",
+        AMBER,
+        AMBER_SOFT,
+    );
+    ui.add_space(10.0);
+
+    if app.ffmpeg_available {
+        let source = ffmpeg_source(app.ffmpeg_path.as_deref());
+        ui.horizontal(|ui| {
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
+            ui.painter().circle_filled(rect.center(), 3.5, GREEN);
+            ui.add_space(5.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "FFmpeg 已就绪（{}）· 输出前会回读校验压缩包完整性",
+                    source
+                ))
+                .color(MUTED)
+                .size(10.0),
+            );
+        });
+    } else {
+        components::notice(
+            ui,
+            "未找到 FFmpeg，视频压缩将被跳过。可安装系统 FFmpeg 后重启应用，或使用随包版本。",
+            RED,
+            RED_SOFT,
+        );
     }
-    Ok(())
+
+    ui.add_space(8.0);
+    ui.label(
+        egui::RichText::new(
+            "随包 FFmpeg 为 GPL + nonfree 构建，仅供个人使用；再分发请替换为 LGPL 合规构建（见 THIRD_PARTY_NOTICES.md）。",
+        )
+        .color(MUTED)
+        .size(9.5),
+    );
+}
+
+fn ffmpeg_source(path: Option<&str>) -> &'static str {
+    match path {
+        Some(p) if p == "ffmpeg" || p == "ffmpeg.exe" => "系统 PATH",
+        Some(p) if p.contains("pptx-compressor") => "用户数据目录",
+        Some(_) => "随包提供",
+        None => "未知",
+    }
 }

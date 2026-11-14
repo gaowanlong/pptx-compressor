@@ -1,5 +1,6 @@
 //! Core data types shared across the application.
 
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub mod extractor;
@@ -46,6 +47,17 @@ impl MediaType {
             MediaType::Gif => "GIF",
             MediaType::Video => "Video",
             MediaType::Other => "Other",
+        }
+    }
+
+    /// Chinese label used by the desktop UI.
+    pub fn label_zh(&self) -> &'static str {
+        match self {
+            MediaType::Jpeg => "JPEG 图片",
+            MediaType::Png => "PNG 图片",
+            MediaType::Gif => "GIF 动图",
+            MediaType::Video => "视频",
+            MediaType::Other => "其他",
         }
     }
 }
@@ -134,8 +146,32 @@ impl MediaInfo {
     }
 }
 
+/// Preset shown as a segmented control in the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Preset {
+    High,
+    Balanced,
+    Small,
+    Custom,
+}
+
+impl Preset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Preset::High => "高质量",
+            Preset::Balanced => "均衡",
+            Preset::Small => "最小体积",
+            Preset::Custom => "自定义",
+        }
+    }
+}
+
 /// User-configurable compression settings.
-#[derive(Debug, Clone)]
+///
+/// `serde(default)` keeps old preference files readable when new fields are
+/// added in later versions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CompressionSettings {
     /// JPEG quality (0–100, higher = better)
     pub image_quality: u8,
@@ -182,16 +218,52 @@ impl CompressionSettings {
         crf_from_quality(self.video_quality)
     }
 
+    /// Which segmented-control option matches the current values.
+    pub fn preset(&self) -> Preset {
+        let key = (
+            self.image_quality,
+            self.video_quality,
+            self.image_max_width_enabled,
+            self.image_max_width,
+            self.video_max_resolution_enabled,
+            self.video_max_height,
+        );
+        match key {
+            (90, 65, false, 1920, false, 1080) => Preset::High,
+            (75, 45, false, 1920, false, 1080) => Preset::Balanced,
+            (30, 18, true, 1024, true, 720) => Preset::Small,
+            _ => Preset::Custom,
+        }
+    }
+
+    pub fn apply_preset(&mut self, preset: Preset) {
+        match preset {
+            Preset::High => self.preset_high(),
+            Preset::Balanced => self.preset_medium(),
+            Preset::Small => self.preset_low(),
+            Preset::Custom => {}
+        }
+    }
+
+    fn reset_scaling(&mut self) {
+        self.image_max_width_enabled = false;
+        self.image_max_width = 1920;
+        self.video_max_resolution_enabled = false;
+        self.video_max_height = 1080;
+    }
+
     /// Apply "High quality" preset.
     pub fn preset_high(&mut self) {
         self.image_quality = 90;
         self.video_quality = 65; // CRF 18
+        self.reset_scaling();
     }
 
     /// Apply "Balanced" preset. Matches the default quality values.
     pub fn preset_medium(&mut self) {
         self.image_quality = 75;
         self.video_quality = 45; // CRF 29
+        self.reset_scaling();
     }
 
     /// Apply "Small size" preset.

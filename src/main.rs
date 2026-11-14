@@ -1,13 +1,12 @@
-//! PPTX Compressor — entry point.
+//! PPTX 压缩器 — 程序入口。
 //!
-//! Loads the app icon from embedded assets, configures Chinese font support,
-//! and applies an Apple-native glassmorphism theme with blue primary color.
+//! 负责窗口、图标、纯白克制主题与中文字体。业务逻辑全部来自库 crate，
+//! 避免 `main.rs` 与 `lib.rs` 重复编译同一批模块。
 
-// Hide the console window on Windows (GUI-only application).
+// Windows 下隐藏控制台窗口（纯 GUI 应用）。
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-// Use the library crate as the single source of truth. Declaring `mod app;`
-// here as well compiled every module twice.
+use pptx_compressor::app::{ACCENT, ACCENT_DARK, ACCENT_SOFT, LINE, SURFACE, TEXT, TEXT_2, WHITE};
 use pptx_compressor::app::PptxCompressorApp;
 
 fn main() -> eframe::Result {
@@ -15,25 +14,25 @@ fn main() -> eframe::Result {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([860.0, 740.0])
-            .with_min_inner_size([640.0, 520.0])
-            .with_title("PPTX Compressor")
+            .with_inner_size([1080.0, 740.0])
+            .with_min_inner_size([900.0, 600.0])
+            .with_title("PPTX 压缩器")
             .with_icon(icon_data),
         ..Default::default()
     };
 
     eframe::run_native(
-        "PPTX Compressor",
+        "pptx-compressor",
         native_options,
         Box::new(|cc| {
-            setup_glass_theme(&cc.egui_ctx);
-            setup_chinese_font(&cc.egui_ctx);
-            Ok(Box::new(PptxCompressorApp::default()))
+            setup_theme(&cc.egui_ctx);
+            let font_ok = setup_chinese_font(&cc.egui_ctx);
+            Ok(Box::new(PptxCompressorApp::new(cc, font_ok)))
         }),
     )
 }
 
-/// Load the app icon from the embedded 256×256 PNG asset.
+/// 从内嵌资源加载 256×256 应用图标。
 fn load_icon() -> egui::IconData {
     let icon_bytes = include_bytes!("../assets/icon_256.png");
     if let Ok(img) = image::load_from_memory(icon_bytes) {
@@ -53,78 +52,68 @@ fn load_icon() -> egui::IconData {
     }
 }
 
-/// Apple-native glassmorphism theme with blue primary color.
-fn setup_glass_theme(ctx: &egui::Context) {
+/// 纯白底、细线、单一强调色。次要控件保持白底，主按钮单独着色。
+fn setup_theme(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
 
-    // ── Spacing (Apple HIG: generous) ──────────────────────
-    style.spacing.item_spacing = egui::vec2(14.0, 10.0);
-    style.spacing.button_padding = egui::vec2(20.0, 8.0);
-    style.spacing.indent = 24.0;
+    style.spacing.item_spacing = egui::vec2(12.0, 8.0);
+    style.spacing.button_padding = egui::vec2(12.0, 6.0);
+    style.spacing.indent = 20.0;
 
-    // ── Color palette ──────────────────────────────────────
-    let blue = egui::Color32::from_rgb(0, 122, 255);       // Apple Blue
-    let blue_dark = egui::Color32::from_rgb(0, 85, 204);   // darker
-    let blue_light = egui::Color32::from_rgb(64, 156, 255); // lighter
-    let text_primary = egui::Color32::from_rgb(29, 29, 31);
-    let bg = egui::Color32::from_rgb(242, 242, 244);       // warm light gray
-    let card_bg = egui::Color32::from_rgba_premultiplied(255, 255, 255, 245);
-    let card_border = egui::Color32::from_rgb(232, 232, 237);
+    let border = egui::Stroke::new(1.0, LINE);
+    let widgets = egui::style::Widgets {
+        noninteractive: egui::style::WidgetVisuals {
+            bg_fill: WHITE,
+            weak_bg_fill: SURFACE,
+            bg_stroke: border,
+            rounding: egui::Rounding::same(8.0),
+            fg_stroke: egui::Stroke::new(1.0, TEXT_2),
+            expansion: 0.0,
+        },
+        inactive: egui::style::WidgetVisuals {
+            bg_fill: WHITE,
+            weak_bg_fill: WHITE,
+            bg_stroke: border,
+            rounding: egui::Rounding::same(8.0),
+            fg_stroke: egui::Stroke::new(1.0, TEXT),
+            expansion: 0.0,
+        },
+        hovered: egui::style::WidgetVisuals {
+            bg_fill: SURFACE,
+            weak_bg_fill: SURFACE,
+            bg_stroke: egui::Stroke::new(1.0, ACCENT),
+            rounding: egui::Rounding::same(8.0),
+            fg_stroke: egui::Stroke::new(1.0, ACCENT_DARK),
+            expansion: 0.0,
+        },
+        active: egui::style::WidgetVisuals {
+            bg_fill: ACCENT_SOFT,
+            weak_bg_fill: ACCENT_SOFT,
+            bg_stroke: egui::Stroke::new(1.0, ACCENT),
+            rounding: egui::Rounding::same(8.0),
+            fg_stroke: egui::Stroke::new(1.0, ACCENT_DARK),
+            expansion: 0.0,
+        },
+        open: egui::style::WidgetVisuals {
+            bg_fill: ACCENT_SOFT,
+            weak_bg_fill: ACCENT_SOFT,
+            bg_stroke: egui::Stroke::new(1.0, ACCENT),
+            rounding: egui::Rounding::same(8.0),
+            fg_stroke: egui::Stroke::new(1.0, ACCENT_DARK),
+            expansion: 0.0,
+        },
+    };
 
     style.visuals = egui::Visuals {
-        window_fill: bg,
-        panel_fill: bg,
-
-        widgets: egui::style::Widgets {
-            noninteractive: egui::style::WidgetVisuals {
-                bg_fill: card_bg,
-                weak_bg_fill: egui::Color32::from_rgb(235, 235, 240),
-                bg_stroke: egui::Stroke::new(1.0, card_border),
-                rounding: egui::Rounding::same(10.0),
-                fg_stroke: egui::Stroke::new(1.0, text_primary),
-                expansion: 0.0,
-            },
-            inactive: egui::style::WidgetVisuals {
-                bg_fill: blue,
-                weak_bg_fill: blue_light,
-                bg_stroke: egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
-                rounding: egui::Rounding::same(10.0),
-                fg_stroke: egui::Stroke::new(1.0, egui::Color32::WHITE),
-                expansion: 0.0,
-            },
-            hovered: egui::style::WidgetVisuals {
-                bg_fill: blue_light,
-                weak_bg_fill: egui::Color32::from_rgb(80, 168, 255),
-                bg_stroke: egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
-                rounding: egui::Rounding::same(10.0),
-                fg_stroke: egui::Stroke::new(1.5, egui::Color32::WHITE),
-                expansion: 1.0,
-            },
-            active: egui::style::WidgetVisuals {
-                bg_fill: blue_dark,
-                weak_bg_fill: egui::Color32::from_rgb(0, 70, 180),
-                bg_stroke: egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
-                rounding: egui::Rounding::same(8.0),
-                fg_stroke: egui::Stroke::new(2.0, egui::Color32::WHITE),
-                expansion: 1.0,
-            },
-            open: egui::style::WidgetVisuals {
-                bg_fill: egui::Color32::from_rgb(0, 105, 220),
-                weak_bg_fill: egui::Color32::from_rgb(0, 95, 210),
-                bg_stroke: egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
-                rounding: egui::Rounding::same(8.0),
-                fg_stroke: egui::Stroke::new(1.0, egui::Color32::WHITE),
-                expansion: 0.0,
-            },
-        },
-
-        override_text_color: Some(text_primary),
+        window_fill: WHITE,
+        panel_fill: WHITE,
+        widgets,
         selection: egui::style::Selection {
-            bg_fill: blue.linear_multiply(0.25),
-            stroke: egui::Stroke::new(1.0, blue),
+            bg_fill: ACCENT.linear_multiply(0.25),
+            stroke: egui::Stroke::new(1.0, ACCENT),
         },
-        hyperlink_color: blue,
-        faint_bg_color: bg,
+        hyperlink_color: ACCENT,
+        faint_bg_color: SURFACE,
         dark_mode: false,
         ..Default::default()
     };
@@ -132,55 +121,61 @@ fn setup_glass_theme(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-/// Add a Chinese font to egui's font list for CJK rendering.
+/// 加载系统中文字体作为 egui 的首选字形来源。
 ///
-/// Platform-specific font paths:
-/// - macOS: STHeiti (苹方) / Songti (宋体)
-/// - Windows: Microsoft YaHei (微软雅黑)
-/// - Linux: Noto Sans CJK / WenQuanYi Micro Hei
-fn setup_chinese_font(ctx: &egui::Context) {
+/// 返回 false 时界面会显示「缺少中文字体」提示，而不是静默显示方块。
+/// TTC 字体集合通过 `FontData::index` 显式指定 face（默认 0 为常规字重）。
+fn setup_chinese_font(ctx: &egui::Context) -> bool {
     #[cfg(target_os = "macos")]
-    let font_candidates: &[&str] = &[
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-        "/System/Library/Fonts/STHeiti Medium.ttc",
-        "/System/Library/Fonts/Songti.ttc",
-        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+    let candidates: &[(&str, u32)] = &[
+        ("/System/Library/Fonts/PingFang.ttc", 0),
+        ("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 0),
+        ("/System/Library/Fonts/STHeiti Light.ttc", 0),
+        ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
+        ("/System/Library/Fonts/Songti.ttc", 0),
     ];
 
     #[cfg(target_os = "windows")]
-    let font_candidates: &[&str] = &[
-        "C:\\Windows\\Fonts\\msyh.ttc",
-        "C:\\Windows\\Fonts\\msyhbd.ttc",
-        "C:\\Windows\\Fonts\\simsun.ttc",
-        "C:\\Windows\\Fonts\\simfang.ttf",
-        "C:\\Windows\\Fonts\\SIMLI.TTF",
+    let candidates: &[(&str, u32)] = &[
+        ("C:\\Windows\\Fonts\\msyh.ttc", 0),
+        ("C:\\Windows\\Fonts\\msyhbd.ttc", 0),
+        ("C:\\Windows\\Fonts\\simsun.ttc", 0),
+        ("C:\\Windows\\Fonts\\simfang.ttf", 0),
+        ("C:\\Windows\\Fonts\\msyhl.ttc", 0),
     ];
 
     #[cfg(target_os = "linux")]
-    let font_candidates: &[&str] = &[
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+    let candidates: &[(&str, u32)] = &[
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+        ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
+        ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", 0),
     ];
 
-    let font_data = font_candidates
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let candidates: &[(&str, u32)] = &[];
+
+    let Some((bytes, index)) = candidates
         .iter()
-        .find_map(|path| std::fs::read(path).ok())
-        .map(|data| egui::FontData::from_owned(data));
+        .find_map(|(path, index)| std::fs::read(path).ok().map(|data| (data, *index)))
+    else {
+        return false;
+    };
 
-    if let Some(data) = font_data {
-        let mut fonts = egui::FontDefinitions::default();
-        fonts.font_data.insert("CJK".to_owned(), data);
-
-        if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-            family.insert(0, "CJK".to_owned());
-        }
-        if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
-            family.push("CJK".to_owned());
-        }
-
-        ctx.set_fonts(fonts);
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "CJK".to_owned(),
+        egui::FontData {
+            font: std::borrow::Cow::Owned(bytes),
+            index,
+            tweak: Default::default(),
+        },
+    );
+    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        family.insert(0, "CJK".to_owned());
     }
+    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+        family.push("CJK".to_owned());
+    }
+    ctx.set_fonts(fonts);
+    true
 }

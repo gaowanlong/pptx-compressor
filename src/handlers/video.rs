@@ -18,7 +18,7 @@ fn locate_ffmpeg() -> Result<String, String> {
     if let Some(path) = find_ffmpeg() {
         return Ok(path);
     }
-    download_ffmpeg(|_, _| {}).map_err(|e| format!("FFmpeg auto-download failed: {e}"))?;
+    download_ffmpeg(|_, _| {}).map_err(|e| format!("FFmpeg 自动下载失败：{e}"))?;
     find_ffmpeg().ok_or_else(|| {
         "FFmpeg download finished but the binary is still unavailable. \
          Install FFmpeg manually or use an official release package."
@@ -80,7 +80,7 @@ pub fn compress_video(
     // the OS pipe buffer and deadlock FFmpeg on verbose encodes.
     let log_path = candidate.with_extension("ffmpeg.log");
     let log_file = std::fs::File::create(&log_path)
-        .map_err(|e| format!("Failed to create FFmpeg log: {}", e))?;
+        .map_err(|e| format!("创建 FFmpeg 日志失败：{}", e))?;
 
     let mut cmd = Command::new(&ffmpeg);
     cmd.args(&args).stdout(Stdio::null()).stderr(Stdio::from(log_file));
@@ -91,7 +91,7 @@ pub fn compress_video(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to run FFmpeg: {}", e))?;
+    let mut child = cmd.spawn().map_err(|e| format!("启动 FFmpeg 失败：{}", e))?;
     let status = loop {
         if cancel.load(Ordering::Relaxed) {
             let _ = child.kill();
@@ -103,7 +103,7 @@ pub fn compress_video(
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => std::thread::sleep(Duration::from_millis(150)),
-            Err(e) => return Err(format!("Failed to wait for FFmpeg: {}", e)),
+            Err(e) => return Err(format!("等待 FFmpeg 结束失败：{}", e)),
         }
     };
 
@@ -112,8 +112,8 @@ pub fn compress_video(
         let _ = std::fs::remove_file(candidate);
         let _ = std::fs::remove_file(&log_path);
         return Err(format!(
-            "FFmpeg failed: {}",
-            stderr.lines().last().unwrap_or("unknown error")
+            "FFmpeg 编码失败：{}",
+            stderr.lines().last().unwrap_or("未知错误")
         ));
     }
     let _ = std::fs::remove_file(&log_path);
@@ -121,7 +121,7 @@ pub fn compress_video(
     let len = std::fs::metadata(candidate).map(|m| m.len()).unwrap_or(0);
     if len == 0 {
         let _ = std::fs::remove_file(candidate);
-        return Err("FFmpeg produced no output".into());
+        return Err("FFmpeg 未生成输出文件".into());
     }
 
     let old_ext = path

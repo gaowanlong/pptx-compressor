@@ -18,14 +18,14 @@ pub fn compress_gif(
     candidate: &Path,
     settings: &CompressionSettings,
 ) -> Result<CompressCandidate, String> {
-    let data = fs::read(path).map_err(|e| format!("Failed to read GIF: {}", e))?;
+    let data = fs::read(path).map_err(|e| format!("读取 GIF 失败：{}", e))?;
 
     let mut decode_opts = gif::DecodeOptions::new();
     decode_opts.set_color_output(gif::ColorOutput::Indexed);
 
     let mut decoder = decode_opts
         .read_info(std::io::Cursor::new(&data))
-        .map_err(|e| format!("Failed to decode GIF: {}", e))?;
+        .map_err(|e| format!("解码 GIF 失败：{}", e))?;
 
     let width = decoder.width();
     let height = decoder.height();
@@ -33,15 +33,15 @@ pub fn compress_gif(
 
     let mut frames: Vec<Frame<'static>> = Vec::new();
     while let Some(frame_result) = decoder.read_next_frame().transpose() {
-        let frame_ref = frame_result.map_err(|e| format!("Failed to read frame: {}", e))?;
-        frames.push(to_owned_frame(&frame_ref));
+        let frame_ref = frame_result.map_err(|e| format!("读取 GIF 帧失败：{}", e))?;
+        frames.push(to_owned_frame(frame_ref));
     }
 
     if frames.is_empty() {
-        return Err("GIF has no frames".into());
+        return Err("GIF 中没有可处理的帧".into());
     }
     if global_palette.is_none() && !frames.iter().any(|f| f.palette.is_some()) {
-        return Err("GIF has no color table".into());
+        return Err("GIF 缺少调色板".into());
     }
 
     // Frame dropping: keep every Nth frame based on target fps. Delay is only
@@ -81,12 +81,12 @@ pub fn compress_gif(
     }
 
     let tmp_file = fs::File::create(candidate)
-        .map_err(|e| format!("Failed to create GIF candidate: {}", e))?;
+        .map_err(|e| format!("创建 GIF 候选文件失败：{}", e))?;
     let mut encoder = Encoder::new(tmp_file, width, height, &palette[..num_colors * 3])
-        .map_err(|e| format!("Failed to create GIF encoder: {}", e))?;
+        .map_err(|e| format!("创建 GIF 编码器失败：{}", e))?;
     encoder
         .set_repeat(Repeat::Infinite)
-        .map_err(|e| format!("Failed to set repeat: {}", e))?;
+        .map_err(|e| format!("设置 GIF 循环次数失败：{}", e))?;
 
     for mut frame in frames {
         if optimize {
@@ -112,7 +112,7 @@ pub fn compress_gif(
         }
         encoder
             .write_frame(&frame)
-            .map_err(|e| format!("Failed to write frame: {}", e))?;
+            .map_err(|e| format!("写入 GIF 帧失败：{}", e))?;
     }
     drop(encoder); // flush
 
@@ -160,7 +160,7 @@ fn build_optimized_palette(frames: &[Frame<'static>], global_palette: Option<&[u
     }
 
     let mut colors: Vec<((u8, u8, u8), u64)> = color_counts.into_iter().collect();
-    colors.sort_by(|a, b| b.1.cmp(&a.1));
+    colors.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
     let mut palette = Vec::with_capacity(256 * 3);
     for &(color, _) in colors.iter().take(256) {
@@ -169,7 +169,7 @@ fn build_optimized_palette(frames: &[Frame<'static>], global_palette: Option<&[u
 
     // GIF palettes must be a power of two (and at least two entries).
     let num_colors = palette.len() / 3;
-    let target = num_colors.next_power_of_two().max(2).min(256);
+    let target = num_colors.next_power_of_two().clamp(2, 256);
     while palette.len() / 3 < target {
         palette.extend_from_slice(&[0, 0, 0]);
     }

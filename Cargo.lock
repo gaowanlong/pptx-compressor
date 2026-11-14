@@ -2429,7 +2429,7 @@ dependencies = [
 
 [[package]]
 name = "pptx-compressor"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "bytesize",
  "dirs",
@@ -2438,6 +2438,8 @@ dependencies = [
  "gif 0.13.3",
  "image",
  "rfd",
+ "serde",
+ "serde_json",
  "tempfile",
  "walkdir",
  "winapi",
