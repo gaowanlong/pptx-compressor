@@ -20,3 +20,6 @@ target/
 # or scripts/build-ffmpeg-lgpl-macos.sh, then passed via env vars.
 build/
 resources/ffmpeg/
+
+# WorkBuddy automation memory / logs are workspace-local, not release assets.
+.workbuddy/

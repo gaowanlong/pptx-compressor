@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 pub mod gif_handler;
 pub mod image;
+pub mod metadata;
 pub mod video;
 pub mod xml_clean;
 

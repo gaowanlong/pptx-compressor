@@ -1,14 +1,20 @@
-//! GIF compression handler — palette optimization and frame dropping.
+//! GIF compression handler — palette optimization, frame dropping and metadata fidelity.
 //!
 //! The rebuilt palette must be applied to *every* frame using the same source
 //! palette that was used to count colors (local table first, then the global
 //! table). Mixing the two is what previously produced badly discolored GIFs.
+//!
+//! Two pieces of animation metadata are now carried over verbatim:
+//! - the Netscape loop count (previously everything was forced to infinite), and
+//! - the transparent index (previously re-mapped to "the closest color", which
+//!   could collide with an opaque color and punch holes in solid areas).
 
 use crate::core::CompressionSettings;
 use crate::handlers::CompressCandidate;
-use gif::{Encoder, Frame, Repeat};
+use gif::{Encoder, Frame};
 use std::borrow::Cow;
 use std::fs;
+use std::io::Cursor;
 use std::path::Path;
 
 /// Compress a GIF into `candidate`. Local frame tables are folded into one
@@ -24,12 +30,16 @@ pub fn compress_gif(
     decode_opts.set_color_output(gif::ColorOutput::Indexed);
 
     let mut decoder = decode_opts
-        .read_info(std::io::Cursor::new(&data))
+        .read_info(Cursor::new(&data))
         .map_err(|e| format!("解码 GIF 失败：{}", e))?;
 
     let width = decoder.width();
     let height = decoder.height();
     let global_palette: Option<Vec<u8>> = decoder.global_palette().map(|p| p.to_vec());
+    // read_info already consumed the Netscape application extension. A GIF
+    // without it returns Finite(0), which the encoder writes as "no extension"
+    // (play once) instead of silently turning it into an infinite loop.
+    let repeat = decoder.repeat();
 
     let mut frames: Vec<Frame<'static>> = Vec::new();
     while let Some(frame_result) = decoder.read_next_frame().transpose() {
@@ -70,11 +80,22 @@ pub fn compress_gif(
     let new_delay = (100.0 / target_fps as f64).max(1.0) as u16;
 
     let optimize = settings.gif_palette_optimize;
-    let palette = if optimize {
+    let has_transparency = frames.iter().any(|f| f.transparent.is_some());
+    let mut palette = if optimize {
         build_optimized_palette(&frames, global_palette.as_deref())
     } else {
         global_palette.clone().unwrap_or_default()
     };
+
+    // Rebuilding the palette can point the transparent index at a slot that is
+    // also used by opaque pixels. Reserve one slot exclusively for transparency
+    // so no opaque pixel can ever be turned transparent by accident.
+    let transparent_slot = if optimize && has_transparency {
+        Some(reserve_transparent_slot(&mut palette))
+    } else {
+        None
+    };
+
     let num_colors = palette.len() / 3;
     if num_colors == 0 {
         return Err("GIF has no usable global palette (local-only color tables)".into());
@@ -85,27 +106,23 @@ pub fn compress_gif(
     let mut encoder = Encoder::new(tmp_file, width, height, &palette[..num_colors * 3])
         .map_err(|e| format!("创建 GIF 编码器失败：{}", e))?;
     encoder
-        .set_repeat(Repeat::Infinite)
+        .set_repeat(repeat)
         .map_err(|e| format!("设置 GIF 循环次数失败：{}", e))?;
 
     for mut frame in frames {
         if optimize {
-            let source_palette = frame
-                .palette
-                .as_deref()
-                .or(global_palette.as_deref())
-                .unwrap_or(&[]);
-            if let Some(t) = frame.transparent {
-                frame.transparent = Some(remap_index(t, source_palette, &palette));
-            }
             frame.buffer = Cow::Owned(requantize_frame(
                 &frame,
                 &palette,
                 global_palette.as_deref(),
+                transparent_slot,
             ));
             // All frames now use the rebuilt global table; a stale local table
             // would point the same indices at the wrong colors.
             frame.palette = None;
+            if let Some(slot) = transparent_slot {
+                frame.transparent = Some(slot);
+            }
         }
         if dropped {
             frame.delay = new_delay;
@@ -117,6 +134,24 @@ pub fn compress_gif(
     drop(encoder); // flush
 
     Ok(CompressCandidate { path: candidate.to_path_buf(), new_extension: None })
+}
+
+/// Reserve one palette slot that opaque pixels will never be mapped to.
+/// GIF color tables must be a power of two (2..=256 entries).
+fn reserve_transparent_slot(palette: &mut Vec<u8>) -> u8 {
+    let count = palette.len() / 3;
+    if count >= 256 {
+        // Table is full: sacrifice the last entry. Opaque pixels are remapped
+        // to their next closest color, transparency stays exact.
+        return 255;
+    }
+    let slot = count as u8;
+    palette.extend_from_slice(&[0, 0, 0]);
+    let target = (count + 1).next_power_of_two().clamp(2, 256);
+    while palette.len() / 3 < target {
+        palette.extend_from_slice(&[0, 0, 0]);
+    }
+    slot
 }
 
 /// Convert a borrowed Frame into an owned Frame with 'static lifetime.
@@ -137,6 +172,8 @@ fn to_owned_frame(frame_ref: &Frame) -> Frame<'static> {
 }
 
 /// Build a compact palette from the most frequently used colors across frames.
+/// Transparent pixels are excluded: their palette entry is arbitrary and would
+/// only steal a slot from colors that are actually visible.
 fn build_optimized_palette(frames: &[Frame<'static>], global_palette: Option<&[u8]>) -> Vec<u8> {
     use std::collections::HashMap;
 
@@ -146,6 +183,9 @@ fn build_optimized_palette(frames: &[Frame<'static>], global_palette: Option<&[u
         if let Some(palette) = pal {
             let mut usage = vec![0u64; palette.len() / 3];
             for &idx in frame.buffer.iter() {
+                if frame.transparent == Some(idx) {
+                    continue;
+                }
                 if (idx as usize) < usage.len() {
                     usage[idx as usize] += 1;
                 }
@@ -161,6 +201,10 @@ fn build_optimized_palette(frames: &[Frame<'static>], global_palette: Option<&[u
 
     let mut colors: Vec<((u8, u8, u8), u64)> = color_counts.into_iter().collect();
     colors.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+    // An all-transparent frame must still yield a usable (2-entry) table.
+    if colors.is_empty() {
+        colors.push(((0, 0, 0), 1));
+    }
 
     let mut palette = Vec::with_capacity(256 * 3);
     for &(color, _) in colors.iter().take(256) {
@@ -177,15 +221,28 @@ fn build_optimized_palette(frames: &[Frame<'static>], global_palette: Option<&[u
 }
 
 /// Re-quantize indexed pixels from the frame's source palette to the new one.
+/// Transparent pixels are sent to the dedicated slot instead of being matched
+/// to a color, and opaque pixels never land in that slot.
 fn requantize_frame(
     frame: &Frame<'static>,
     new_palette: &[u8],
     global_palette: Option<&[u8]>,
+    transparent_slot: Option<u8>,
 ) -> Vec<u8> {
     let old_palette = frame.palette.as_deref().or(global_palette).unwrap_or(&[]);
     if old_palette.is_empty() {
-        return frame.buffer.to_vec();
+        // Without a source palette colors cannot be remapped, but transparency
+        // still has to point at the dedicated slot.
+        return frame
+            .buffer
+            .iter()
+            .map(|&idx| match (frame.transparent, transparent_slot) {
+                (Some(t), Some(slot)) if idx == t => slot,
+                _ => idx,
+            })
+            .collect();
     }
+
     let old_colors = old_palette.len() / 3;
     let mut mapping = vec![0u8; old_colors];
     for old_idx in 0..old_colors {
@@ -194,41 +251,39 @@ fn requantize_frame(
             old_palette[old_idx * 3 + 1],
             old_palette[old_idx * 3 + 2],
             new_palette,
+            transparent_slot,
         );
     }
     frame
         .buffer
         .iter()
-        .map(|&idx| mapping.get(idx as usize).copied().unwrap_or(0))
+        .map(|&idx| match (frame.transparent, transparent_slot) {
+            (Some(t), Some(slot)) if idx == t => slot,
+            _ => mapping.get(idx as usize).copied().unwrap_or(0),
+        })
         .collect()
 }
 
-fn remap_index(index: u8, old_palette: &[u8], new_palette: &[u8]) -> u8 {
-    let i = index as usize;
-    if i * 3 + 2 >= old_palette.len() {
-        return 0;
-    }
-    find_closest_color(
-        old_palette[i * 3],
-        old_palette[i * 3 + 1],
-        old_palette[i * 3 + 2],
-        new_palette,
-    )
-}
-
 /// Find the index of the closest color in a palette using Euclidean distance.
-fn find_closest_color(r: u8, g: u8, b: u8, palette: &[u8]) -> u8 {
-    let mut best_idx = 0u8;
+/// `exclude` keeps the reserved transparent slot out of the candidate set.
+fn find_closest_color(r: u8, g: u8, b: u8, palette: &[u8], exclude: Option<u8>) -> u8 {
+    let mut best_idx: Option<u8> = None;
     let mut best_dist = u32::MAX;
     for i in 0..palette.len() / 3 {
+        let idx = i as u8;
+        if exclude == Some(idx) {
+            continue;
+        }
         let dr = r as i32 - palette[i * 3] as i32;
         let dg = g as i32 - palette[i * 3 + 1] as i32;
         let db = b as i32 - palette[i * 3 + 2] as i32;
         let dist = (dr * dr + dg * dg + db * db) as u32;
         if dist < best_dist {
             best_dist = dist;
-            best_idx = i as u8;
+            best_idx = Some(idx);
         }
     }
-    best_idx
+    // A table has at least two entries and at most one is excluded, so this
+    // fallback is unreachable in practice; it only guards a malformed palette.
+    best_idx.unwrap_or(0)
 }
