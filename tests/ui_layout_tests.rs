@@ -72,6 +72,32 @@ fn every_panel_renders_in_all_six_states() {
 }
 
 #[test]
+fn input_warning_notices_render() {
+    let ctx = egui::Context::default();
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(900.0, 600.0),
+        )),
+        ..Default::default()
+    };
+
+    let mut app = app_with_media(AppState::Ready);
+    app.input_warnings = vec![
+        "包含数字签名，压缩后签名会失效，建议先另存副本".into(),
+        "包含 VBA 宏，建议另存为普通 .pptx 后再压缩".into(),
+        "包含 OLE 嵌入对象，压缩后请先在 PowerPoint 中验证".into(),
+        "演示文稿设置了修改密码或只读保护".into(),
+    ];
+
+    let _output = ctx.run(input, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            file_panel::show(ui, &mut app);
+        });
+    });
+}
+
+#[test]
 fn empty_media_list_and_advanced_panel_render() {
     let ctx = egui::Context::default();
     let input = egui::RawInput {

@@ -1,5 +1,6 @@
 //! PPTX ZIP extraction, OOXML reference maintenance and repacking.
 
+use crate::core::inspection::{self, Inspection};
 use crate::core::MediaInfo;
 use std::fs;
 use std::io::{self};
@@ -43,7 +44,24 @@ fn resolve_entry_path(entry: &zip::read::ZipFile) -> Option<PathBuf> {
 /// Returns the list of discovered media files.
 ///
 /// Guards against zip bombs, symlink entries and absurd entry counts.
+/// Inputs that cannot safely be repacked (encrypted, IRM-protected, OLE
+/// containers, packages without `[Content_Types].xml`) are rejected before
+/// a single byte is written to `extract_dir`.
 pub fn extract_pptx(pptx_path: &Path, extract_dir: &Path) -> io::Result<Vec<MediaInfo>> {
+    extract_pptx_inspected(pptx_path, extract_dir).map(|(media, _)| media)
+}
+
+/// Same as [`extract_pptx`], but also returns the input inspection result so
+/// the GUI can surface non-blocking warnings (signatures, macros, ...).
+pub fn extract_pptx_inspected(
+    pptx_path: &Path,
+    extract_dir: &Path,
+) -> io::Result<(Vec<MediaInfo>, Inspection)> {
+    let inspection = inspection::inspect_pptx(pptx_path)?;
+    if let Some(message) = inspection.blocker_message() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, message));
+    }
+
     let file = fs::File::open(pptx_path)?;
     let mut archive =
         ZipArchive::new(file).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -118,7 +136,7 @@ pub fn extract_pptx(pptx_path: &Path, extract_dir: &Path) -> io::Result<Vec<Medi
         }
     }
 
-    Ok(scan_media(extract_dir))
+    Ok((scan_media(extract_dir), inspection))
 }
 
 /// Scan the extracted directory for media files under ppt/media/.

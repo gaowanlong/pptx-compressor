@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub mod extractor;
+pub mod inspection;
 pub mod pipeline;
 
 /// Convert the 0–100 quality slider into an FFmpeg CRF value.

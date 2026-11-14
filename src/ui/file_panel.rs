@@ -2,8 +2,8 @@
 //!
 //! 解压在后台线程进行，GUI 只负责派发任务与展示结果，超大 PPTX 不会冻结窗口。
 
-use crate::app::{AppState, LoadMessage, PptxCompressorApp, ACCENT, ACCENT_SOFT, GREEN, GREEN_SOFT, LINE, MUTED, SURFACE_2, TEXT, WHITE};
-use crate::core::{extractor::extract_pptx, MediaInfo};
+use crate::app::{AppState, LoadMessage, PptxCompressorApp, ACCENT, ACCENT_SOFT, AMBER, AMBER_SOFT, GREEN, GREEN_SOFT, LINE, MUTED, SURFACE_2, TEXT, WHITE};
+use crate::core::{extractor::extract_pptx_inspected, MediaInfo};
 use crate::ui::components;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -11,7 +11,7 @@ use std::sync::mpsc;
 pub fn show(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
     let hovering = ui.input(|i| !i.raw.hovered_files.is_empty());
 
-    components::section_head(ui, "源文件", "仅支持未加密的 .pptx", |ui| {
+    components::section_head(ui, "源文件", "自动检测加密 / 签名 / 宏", |ui| {
         if !app.input_files.is_empty()
             && app.state != AppState::Compressing
             && components::text_link(ui, "更换文件").clicked()
@@ -185,6 +185,23 @@ fn show_file_card(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
         });
     });
 
+    // 输入安全检测的告警最多直接展示两条，完整列表写入活动日志。
+    for warning in app.input_warnings.iter().take(2) {
+        ui.add_space(6.0);
+        components::notice(ui, &format!("输入检查 · {}", warning), AMBER, AMBER_SOFT);
+    }
+    if app.input_warnings.len() > 2 {
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(format!(
+                "另有 {} 项提示，详见活动日志",
+                app.input_warnings.len() - 2
+            ))
+            .color(MUTED)
+            .size(10.5),
+        );
+    }
+
     ui.add_space(8.0);
     if app.state != AppState::Compressing {
         ui.horizontal(|ui| {
@@ -229,6 +246,7 @@ pub fn load_pptx(app: &mut PptxCompressorApp, source: Option<&Path>) {
 
     app.state = AppState::Loading;
     app.activity_log.clear();
+    app.input_warnings.clear();
     app.media_files.clear();
     app._temp_dir = None;
     app.extract_dir = None;
@@ -244,18 +262,26 @@ pub fn load_pptx(app: &mut PptxCompressorApp, source: Option<&Path>) {
     app.load_rx = Some(rx);
 
     std::thread::spawn(move || {
-        let outcome: Result<(Vec<MediaInfo>, PathBuf, tempfile::TempDir), String> = (|| {
+        let outcome: Result<
+            (Vec<MediaInfo>, PathBuf, tempfile::TempDir, Vec<String>),
+            String,
+        > = (|| {
             let temp = tempfile::tempdir()
                 .map_err(|e| format!("创建临时目录失败：{}", e))?;
             let extract_path = temp.path().to_path_buf();
-            let media = extract_pptx(&pptx_path, &extract_path)
+            let (media, inspection) = extract_pptx_inspected(&pptx_path, &extract_path)
                 .map_err(|e| e.to_string())?;
-            Ok((media, extract_path, temp))
+            Ok((
+                media,
+                extract_path,
+                temp,
+                inspection.warning_messages(),
+            ))
         })();
 
         match outcome {
-            Ok((media, dir, temp)) => {
-                let _ = tx.send(LoadMessage::Loaded(generation, media, dir, temp));
+            Ok((media, dir, temp, warnings)) => {
+                let _ = tx.send(LoadMessage::Loaded(generation, media, dir, temp, warnings));
             }
             Err(e) => {
                 let _ = tx.send(LoadMessage::Failed(generation, e));

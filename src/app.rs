@@ -79,7 +79,8 @@ impl AppState {
 
 /// 后台解包线程回传的消息。`generation` 用于丢弃过期结果（用户中途换了文件）。
 pub enum LoadMessage {
-    Loaded(u64, Vec<MediaInfo>, PathBuf, tempfile::TempDir),
+    /// (generation, media, extract_dir, temp_dir, input_warnings)
+    Loaded(u64, Vec<MediaInfo>, PathBuf, tempfile::TempDir, Vec<String>),
     Failed(u64, String),
 }
 
@@ -103,6 +104,8 @@ pub struct PptxCompressorApp {
     pub result_compressed: u64,
     /// 活动日志：非致命错误、跳过原因、清理告警都在这里可见。
     pub activity_log: Vec<String>,
+    /// 输入安全检测的告警（签名、宏、嵌入对象、修改保护等），显示在文件卡片下。
+    pub input_warnings: Vec<String>,
     pub ffmpeg_available: bool,
     /// 实际使用的 FFmpeg 命令（自动查找或用户指定）。
     pub ffmpeg_path: Option<String>,
@@ -137,6 +140,7 @@ impl Default for PptxCompressorApp {
             result_original: 0,
             result_compressed: 0,
             activity_log: Vec::new(),
+            input_warnings: Vec::new(),
             ffmpeg_available: located.is_some(),
             ffmpeg_path: located.as_ref().map(|f| f.command.clone()),
             ffmpeg_source: located.as_ref().map(|f| f.source),
@@ -241,6 +245,7 @@ impl PptxCompressorApp {
         self.result_original = 0;
         self.result_compressed = 0;
         self.activity_log.clear();
+        self.input_warnings.clear();
         self.output_path = None;
     }
 
@@ -257,8 +262,10 @@ impl PptxCompressorApp {
         if let Some(rx) = &self.load_rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
-                    LoadMessage::Loaded(gen, media, dir, temp) if gen == self.load_generation => {
-                        loaded = Some((media, dir, temp));
+                    LoadMessage::Loaded(gen, media, dir, temp, warnings)
+                        if gen == self.load_generation =>
+                    {
+                        loaded = Some((media, dir, temp, warnings));
                         load_failed = None;
                     }
                     LoadMessage::Failed(gen, err) if gen == self.load_generation => {
@@ -270,7 +277,7 @@ impl PptxCompressorApp {
                 }
             }
         }
-        if let Some((media, dir, temp)) = loaded {
+        if let Some((media, dir, temp, warnings)) = loaded {
             let count = media.len();
             self.media_files = media;
             self.extract_dir = Some(dir);
@@ -278,6 +285,10 @@ impl PptxCompressorApp {
             self.state = AppState::Ready;
             self.load_rx = None;
             self.log(format!("已解析文稿，共发现 {} 个媒体文件", count));
+            self.input_warnings = warnings.clone();
+            for warning in &warnings {
+                self.log(format!("输入检查 · {}", warning));
+            }
         } else if let Some(err) = load_failed {
             self.state = AppState::Error;
             self.load_rx = None;

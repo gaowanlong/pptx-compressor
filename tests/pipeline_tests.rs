@@ -138,11 +138,17 @@ fn extraction_rejects_zip_bombs() {
         let options = SimpleFileOptions::default()
             .compression_method(CompressionMethod::Deflated)
             .compression_level(Some(9));
+        // Structure must look valid so the test really exercises the ratio guard.
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(b"<Types/>").unwrap();
+        zip.start_file("ppt/presentation.xml", options).unwrap();
+        zip.write_all(b"<p:presentation/>").unwrap();
         zip.start_file("ppt/media/big.bin", options).unwrap();
         zip.write_all(&vec![0u8; 4 * 1024 * 1024]).unwrap();
         zip.finish().unwrap();
     }
     let out = dir.path().join("extracted");
     fs::create_dir_all(&out).unwrap();
-    assert!(extract_pptx(&pptx, &out).is_err());
+    let err = extract_pptx(&pptx, &out).unwrap_err().to_string();
+    assert!(err.contains("压缩比"), "应由炸弹防护拦截：{err}");
 }

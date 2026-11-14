@@ -75,6 +75,30 @@ fn legacy_preference_file_still_loads() {
 }
 
 #[test]
+fn reset_clears_input_warnings_but_keeps_preferences() {
+    use pptx_compressor::app::PptxCompressorApp;
+
+    let mut app = PptxCompressorApp::default();
+    app.settings.apply_preset(Preset::Small);
+    app.output_dir = Some(std::path::PathBuf::from("/tmp/pptx-out"));
+    app.input_files = vec![std::path::PathBuf::from("/tmp/demo.pptx")];
+    app.input_warnings = vec!["包含数字签名，压缩后签名会失效".into()];
+    app.activity_log.push("已解析文稿".into());
+
+    app.reset_for_new_file();
+
+    assert!(app.input_warnings.is_empty());
+    assert!(app.input_files.is_empty());
+    assert!(app.activity_log.is_empty());
+    assert_eq!(app.settings.preset(), Preset::Small, "用户偏好不应被重置");
+    assert_eq!(
+        app.output_dir,
+        Some(std::path::PathBuf::from("/tmp/pptx-out")),
+        "输出目录不应被重置"
+    );
+}
+
+#[test]
 fn chinese_status_and_media_labels_are_wired() {
     assert_eq!(AppState::Idle.badge_text(0), "等待文件");
     assert_eq!(AppState::Compressing.badge_text(42), "压缩中 42%");

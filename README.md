@@ -1,6 +1,6 @@
 # PPTX 压缩器
 
-![Version](https://img.shields.io/badge/version-v1.2.0-blue.svg)
+![Version](https://img.shields.io/badge/version-v1.2.1-blue.svg)
 ![macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)
 ![Windows](https://img.shields.io/badge/platform-Windows-0078d7.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
@@ -25,6 +25,9 @@
 - **XML 与包清理**
   - 剥离 XML 注释（保留文本空白，避免破坏 `<a:t>` 内容）
   - 剥离 `docProps/thumbnail.*` 预览图，并同步清理对应的关系与内容类型声明
+- **输入安全检测**
+  - 解压前只读检查：加密 / IRM 保护、旧版 `.ppt` 或加密的 OLE 复合文档、空包、缺少 `[Content_Types].xml` 会**直接阻断**，给出「另存为未加密 .pptx」的建议，且不写入任何解压文件
+  - 数字签名、VBA 宏、OLE 嵌入对象、修改密码 / 只读保护、缺少标准主部件会**明确告警**，显示在文件卡片与活动日志中
 - **输出安全**
   - 同名结果文件自动追加序号，**绝不覆盖**已有文件
   - 先写临时文件、回读校验 ZIP 完整性、再原子替换
@@ -58,7 +61,7 @@
 
 界面按 Ardot UI 设计技能的 Web App 规范重设计：单一主导区、渐进披露、状态可见、一屏一主操作，纯白底 + 单一强调色，去掉等权卡片堆叠与毛玻璃。系统字体优先使用苹方（macOS）/ 微软雅黑（Windows）/ Noto Sans CJK（Linux）；找不到中文字体时标题栏会明确提示，而不是静默显示方块。
 
-解包与压缩都在后台线程执行，超大文稿不会冻结窗口；取消会终止 FFmpeg 子进程并重新从源文件解压，避免基于已损失画质的数据二次压缩。
+输入安全检测、解包与压缩都在后台线程执行，阻断时窗口直接进入失败态并说明原因，超大文稿也不会冻结窗口；取消会终止 FFmpeg 子进程并重新从源文件解压，避免基于已损失画质的数据二次压缩。
 
 ## 使用方式
 
@@ -71,6 +74,7 @@
 
 ## 版本历史
 
+- **v1.2.1**：新增输入安全检测，解压前阻断加密 / IRM / OLE / 结构损坏包，对签名、宏、嵌入对象与修改保护给出明确告警，并补齐相应界面与回归测试。
 - **v1.2.0**：彻底移除不可再分发的 GPL+nonfree FFmpeg（默认不内置、不自动下载），提供用户自备路径、许可证门禁与合规构建脚本；支持 libx264 / libopenh264 双编码器；媒体压缩改为「并行生成候选 + 串行裁决」。
 - **v1.1.0**：落地全新中文双区界面、解包后台化、设置持久化、中文字体加载、活动日志与逐项原因展示；后台 44 处错误与日志文案中文化；按 clippy 建议清理代码质量问题。
 - **v1.0.1**：修复压缩变大不回滚、视频容器与 OOXML 声明不一致、缩略图悬空关系、GIF 调色板错色、FFmpeg 下载后找不到、输出非原子写、取消无法中断编码等正确性问题。
@@ -79,7 +83,7 @@
 
 ## 已知限制
 
-- 仅支持未加密的 `.pptx`；`.pptm` 宏文稿与带数字签名的文稿，压缩后签名会失效，建议先另存副本。
+- 加密 / IRM 保护、旧版 `.ppt`、空包与缺少 `[Content_Types].xml` 的文件会被输入检测直接阻断；带数字签名、VBA 宏、OLE 嵌入对象或修改保护的文稿仍可压缩，但需按界面提示先另存副本并在 PowerPoint 中验证。
 - 一次只处理一个文件，暂不支持批量队列；图片并行上限为 4，视频转码仍串行。
 - JPEG 重编码不应用 EXIF 方向、不保留 ICC / 文本元数据；GIF 循环次数统一写为无限循环。
 - 体积「预估」是启发式估算，不代表真实结果。
@@ -99,7 +103,7 @@
 
 ```bash
 cargo check --all-targets
-cargo test                       # 单元测试、ZIP 往返、mock FFmpeg 视频链路、并行一致性
+cargo test                       # 单元测试、ZIP 往返、输入安全检测、mock FFmpeg 视频链路、并行一致性
 cargo test -- --include-ignored  # 装了 FFmpeg 时额外跑真实转码端到端用例
 cargo clippy --all-targets -- -D warnings
 cargo build --release            # 产物：target/release/pptx-compressor
