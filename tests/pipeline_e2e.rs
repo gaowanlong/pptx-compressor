@@ -133,14 +133,151 @@ fn smaller_candidate_replaces_and_output_is_valid() {
 }
 
 #[test]
-#[ignore = "requires the bundled FFmpeg binary"]
-fn video_conversion_renames_and_updates_declarations() {
-    let ffmpeg = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("resources/ffmpeg/macos/ffmpeg");
-    if !ffmpeg.exists() {
-        eprintln!("Bundled FFmpeg not present, skipping");
-        return;
+fn parallel_media_processing_is_complete_and_deterministic() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("pkg");
+    write_package_skeleton(&root, "m0.jpg", "image/jpeg");
+
+    let mut originals = Vec::new();
+    let mut media = Vec::new();
+    for i in 0..6 {
+        let name = format!("m{i}.jpg");
+        let path = root.join("ppt/media").join(&name);
+        // 偶数：高质量源会被默认 q75 压小；奇数：q20 源重编码只会变大。
+        let quality = if i % 2 == 0 { 98 } else { 20 };
+        originals.push(make_jpeg(&path, quality));
+        media.push(MediaInfo::new(
+            format!("ppt/media/{name}"),
+            path,
+            MediaType::Jpeg,
+        ));
     }
+
+    let (out, messages) = run(&root, &mut media, &CompressionSettings::default());
+
+    // 每个媒体都收到最终状态，且按索引升序：并行只发生在候选生成阶段，
+    // 裁决与日志仍在串行阶段完成，因此顺序不受线程调度影响。
+    let finals: Vec<usize> = messages
+        .iter()
+        .filter_map(|m| match m {
+            CompressMessage::StatusUpdate(
+                idx,
+                MediaStatus::Done | MediaStatus::Skipped | MediaStatus::Failed,
+                _,
+            ) => Some(*idx),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(finals, (0..6).collect::<Vec<_>>(), "最终状态数量或顺序不对");
+
+    let progresses: Vec<usize> = messages
+        .iter()
+        .filter_map(|m| match m {
+            CompressMessage::Progress(current, _, _) => Some(*current),
+            _ => None,
+        })
+        .collect();
+    assert!(progresses.len() >= 6, "进度消息不足：{progresses:?}");
+    assert!(progresses.contains(&6), "进度没有推进到全部任务完成：{progresses:?}");
+
+    for (i, original) in originals.iter().enumerate() {
+        let bytes = zip_bytes(&out, &format!("ppt/media/m{i}.jpg"));
+        if i % 2 == 0 {
+            assert_ne!(&bytes, original, "m{i}.jpg 应当被更小的候选替换");
+        } else {
+            assert_eq!(&bytes, original, "m{i}.jpg 变大后必须保留原件");
+        }
+    }
+    assert!(messages.iter().any(|m| matches!(m, CompressMessage::Finished(..))));
+}
+
+/// 两个视频用例都会改写会话级的 FFmpeg 路径，串行执行避免互相干扰。
+#[cfg(unix)]
+static FFMPEG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 一个「假的 FFmpeg」：实现 -version / -encoders 与编码调用，
+/// 用来在没有真实 FFmpeg 的机器上验证整条视频改名与 OOXML 同步链路。
+#[cfg(unix)]
+fn write_mock_ffmpeg(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("ffmpeg");
+    let script = r#"#!/bin/sh
+case "$1" in
+  -version)
+    echo 'ffmpeg version 99.0-mock'
+    echo 'configuration: --disable-gpl --disable-nonfree --enable-libopenh264 --enable-libx264'
+    exit 0 ;;
+  -hide_banner)
+    echo ' V..... libx264      H.264 / AVC (codec h264)'
+    echo ' V..... libopenh264  OpenH264 (codec h264)'
+    exit 0 ;;
+esac
+last=""
+for arg in "$@"; do last="$arg"; done
+printf 'MOCK-MP4-PAYLOAD' > "$last"
+exit 0
+"#;
+    fs::write(&path, script).unwrap();
+    let mut perms = fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&path, perms).unwrap();
+    path
+}
+
+#[cfg(unix)]
+#[test]
+fn video_conversion_with_mock_ffmpeg_renames_and_updates_declarations() {
+    let _guard = FFMPEG_TEST_LOCK.lock().unwrap();
+    let dir = tempdir().unwrap();
+    let mock = write_mock_ffmpeg(dir.path());
+    pptx_compressor::utils::ffmpeg::set_preferred(Some(mock.to_string_lossy().into_owned()));
+
+    let root = dir.path().join("pkg");
+    write_package_skeleton(&root, "clip.mov", "video/quicktime");
+    let clip = root.join("ppt/media/clip.mov");
+    fs::write(&clip, vec![0xABu8; 4096]).unwrap();
+
+    let mut media = vec![MediaInfo::new(
+        "ppt/media/clip.mov".into(),
+        clip.clone(),
+        MediaType::Video,
+    )];
+    let (out, messages) = run(&root, &mut media, &CompressionSettings::default());
+
+    assert!(
+        messages.iter().any(
+            |m| matches!(m, CompressMessage::StatusUpdate(_, MediaStatus::Done, _))
+        ),
+        "视频未被替换：{:?}",
+        messages
+    );
+    assert!(root.join("ppt/media/clip.mp4").exists());
+    assert!(!clip.exists());
+    assert_eq!(zip_bytes(&out, "ppt/media/clip.mp4"), b"MOCK-MP4-PAYLOAD");
+
+    let ct = zip_text(&out, "[Content_Types].xml");
+    assert!(ct.contains("PartName=\"/ppt/media/clip.mp4\""));
+    assert!(ct.contains("ContentType=\"video/mp4\""));
+    assert!(ct.contains("Extension=\"mp4\""));
+    let rels = zip_text(&out, "ppt/slides/_rels/slide1.xml.rels");
+    assert!(rels.contains("../media/clip.mp4"));
+    assert!(!rels.contains("clip.mov"));
+
+    pptx_compressor::utils::ffmpeg::set_preferred(None);
+}
+
+#[test]
+#[ignore = "requires a user-supplied FFmpeg with an H.264 encoder"]
+fn video_conversion_renames_and_updates_declarations() {
+    #[cfg(unix)]
+    let _guard = FFMPEG_TEST_LOCK.lock().unwrap();
+    // v1.2.0 起不再随包分发 FFmpeg：用例改为使用本机 FFmpeg，
+    // 没装时明确跳过（不会伪装成通过），见 FFMPEG_SETUP.md。
+    let Some(ffmpeg) = pptx_compressor::utils::ffmpeg::find_ffmpeg() else {
+        eprintln!("本机未找到 FFmpeg，跳过视频端到端用例（参见 FFMPEG_SETUP.md）");
+        return;
+    };
+    pptx_compressor::utils::ffmpeg::set_preferred(Some(ffmpeg.clone()));
 
     let dir = tempdir().unwrap();
     let root = dir.path().join("pkg");
@@ -196,4 +333,6 @@ fn video_conversion_renames_and_updates_declarations() {
     let rels = zip_text(&out, "ppt/slides/_rels/slide1.xml.rels");
     assert!(rels.contains("../media/clip.mp4"));
     assert!(!rels.contains("clip.mov"));
+
+    pptx_compressor::utils::ffmpeg::set_preferred(None);
 }

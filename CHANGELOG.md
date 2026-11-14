@@ -2,6 +2,57 @@
 
 本项目所有值得注意的变更都记录在这里，版本号遵循语义化版本。Release 说明直接取自对应章节。
 
+## [v1.2.0] - 2026-11-14
+
+合规整改与压缩并行化版。上一版两次「如实说明」的 FFmpeg 许可证风险在本版彻底闭环，同时把媒体压缩从全串行改为受限并行。
+
+### 破坏性变更（升级前请读）
+
+- **发布包默认不再内置 FFmpeg，也不再运行时自动下载二进制**。v1.1.0 及更早版本随包分发的 macOS / Windows FFmpeg 是 `--enable-gpl --enable-version3 --enable-nonfree` 构建，官方明确不允许再分发，与 MIT 源码捆绑提供存在法律风险；macOS 侧也不存在可直接再分发的 LGPL 预编译版本。因此仓库中这两个二进制（43 MB + 79 MB）已删除，`.gitignore` 同时屏蔽 `resources/ffmpeg/` 与 `build/`，防止再次误提交。
+- 影响范围：**图片、GIF、XML 注释与缩略图压缩完全不受影响**；只有 PPTX 内嵌视频的重编码需要用户本机提供 FFmpeg。找不到时视频项会明确报错并在活动日志说明，不再静默跳过或悄悄联网下载。安装与指定方式见新增的 `FFMPEG_SETUP.md`。
+
+### 新增
+
+- **四级 FFmpeg 查找**：手动指定并持久化的路径 → 随包副本（仅当维护者用合规构建打包）→ 用户数据目录 → 系统 PATH。找不到时右下角「环境说明」给出平台安装指引，并提供「选择本机 FFmpeg…」「重新检测」「恢复自动查找」三个动作；选择时会先执行 `ffmpeg -version` 校验，路径随偏好保存（旧偏好文件仍可读取）。
+- **许可证可见**：解析 `ffmpeg -version` 的 `configuration` 行，把构建识别为 LGPL / GPL / nonfree / 未识别并在界面标注。用户自行安装的 GPL 构建供个人使用不构成再分发，运行时不做拦截；拦截只发生在打包阶段。
+- **打包许可证门禁**：新增 `scripts/ffmpeg-license-check.sh`，`package.sh` 只有在显式传入 `FFMPEG_MACOS` / `FFMPEG_WINDOWS` 时才会内置 FFmpeg，且必须通过该门禁；任何 `--enable-gpl` / `--enable-version3` / `--enable-nonfree` 或读不到构建配置的二进制都会被拒绝。Windows `.exe` 无法在 macOS 上执行，改从二进制中提取编译期配置字符串判定。
+- **合规构建路径**：新增 `scripts/fetch-ffmpeg-lgpl.sh`（Windows 下载 BtbN 的 win64 LGPL 静态构建并自动门禁校验）与 `scripts/build-ffmpeg-lgpl-macos.sh`（macOS 从源码构建，用 BSD 许可的 libopenh264 替代 GPL 的 libx264）。两者都只生成到 `build/compliant/`，必须通过环境变量显式指定才会打包。
+- **双 H.264 编码器自适应**：运行时探测 `libx264` / `libopenh264`。有 libx264 时沿用 CRF + `medium` preset + High profile；LGPL 构建只有 libopenh264 时自动切换为码率模型（`-b:v`，按质量滑杆映射），并去掉 x264 专有参数；两者都没有时给出明确中文错误。命令行构造抽成纯函数 `build_video_args`，无 FFmpeg 也能回归测试。
+- **压缩并行化**：流水线拆成「并行生成候选 / 串行裁决安装」两阶段。图片与 GIF 用最多 4 线程的受限线程池并行重编码，视频转码保持串行（FFmpeg 自身已多线程，并发多进程会打爆内存）。handler 仍只写私有工作目录，只有串行阶段会改动解压树，因此「变小才替换」「失败回滚」「OOXML 引用同步」「日志顺序稳定」全部保持，且取消时无需逐文件回滚。
+
+### 修复
+
+- 去掉 `download_ffmpeg` 及其整套 curl / 解压 / 进度轮询逻辑：此前开发环境会自动下载 GPL 二进制到用户数据目录，既是合规风险也带来无声的网络行为。
+- 修复 v1.0.1 起「FFmpeg 下载完成却找不到」问题的根因场景（现在根本没有下载这一步），并把查找候选路径与来源标签统一到一处。
+- 视频压缩失败时不再出现英文错误；所有面向用户的提示中文化。
+- 并行阶段的进度消息用原子计数合并发送，最终状态仍按媒体索引升序，避免线程调度导致界面清单跳动。
+
+### 工程与文档
+
+- `Cargo.toml` 升为 1.2.0，新增 `rayon`（仅用于受限并行）；`package.sh` 默认产物不再含 FFmpeg，改为随包附带 `FFMPEG_SETUP.md`。
+- 重写 `THIRD_PARTY_NOTICES.md`（不再声明随包二进制，改为说明用户自备与维护者合规打包流程）、重写 README 的 FFmpeg / 合规 / 测试章节，新增 `FFMPEG_SETUP.md` 与本 CHANGELOG 章节。
+- 新增 `tests/ffmpeg_tests.rs` 6 项（许可证判定、编码器回退、x264 CRF 参数、openh264 码率参数且不残留 x264 专有参数、非法编码器拒绝、缩放滤镜在两种编码器下均生效）。
+- `tests/pipeline_e2e.rs` 新增「mock FFmpeg」端到端用例：用本地脚本模拟 `-version` / `-encoders` / 编码调用，在没有真实 FFmpeg 的机器上完整验证 `.mov → .mp4` 改名、Content_Types 与 `.rels` 同步；另新增并行一致性用例（6 个 JPEG，验证最终状态按索引升序、进度覆盖全部任务、变小的替换 / 变大的保留原件）。真实 FFmpeg 用例改为使用系统 FFmpeg，未安装时明确跳过并打印提示，不再伪装成通过。
+- `tests/ui_state_tests.rs` 补充 `ffmpeg_override` 的往返序列化与旧偏好文件兼容断言。
+
+### 验证
+
+- `cargo check --all-targets` 零警告；`cargo clippy --all-targets -- -D warnings` 零告警。
+- **26 项测试全部通过**（`cargo test -- --include-ignored`）：6 项 FFmpeg 合规 / 参数、5 项流水线端到端（含 mock 视频链路与并行一致性）、8 项核心逻辑、2 项无窗口六态渲染、5 项状态与偏好。
+- 许可证门禁实测四种情形：macOS GPL+nonfree 拒绝、Windows GPL 拒绝、伪造无配置二进制拒绝、构造的 LGPL 配置通过。
+- 本机未安装 FFmpeg，因此依赖真实转码的用例按设计跳过；视频链路改由 mock 端到端用例与参数单测覆盖。在装有 FFmpeg 的机器上执行 `cargo test -- --include-ignored` 会额外跑真实转码。
+- 在 macOS 上直接启动 v1.2.0 release 二进制保持运行 49 秒无 panic、无错误输出（随后手动结束），验证移除随包 FFmpeg 后窗口创建、中文字体加载与首帧渲染仍正常。
+- 两个发布包均校验过结构与架构：包内不含任何 FFmpeg 二进制，附带 `FFMPEG_SETUP.md` 与完整文档，macOS Info.plist 版本为 1.2.0。
+
+### 已知限制（未在本版解决）
+
+- **历史 Release 资产**：v1.0.0 / v1.0.1 / v1.1.0 的已发布二进制仍附带 GPL+nonfree FFmpeg。清理这些资产属于对外部已发布内容的操作，本版未擅自改动，需维护者在 GitHub Release 页面手动删除对应附件或替换为合规包。
+- 一次仍只处理一个 PPTX；视频转码保持串行，图片并行上限固定为 4。
+- 体积「预估」仍是启发式估算；JPEG 不应用 EXIF 方向、不保留 ICC / 文本元数据，GIF 循环次数统一写为无限循环。
+- 仅支持未加密 `.pptx`；宏文稿与带数字签名的文稿压缩后签名失效。
+- 若维护者重新内置 LGPL FFmpeg，还需随包附上对应 LGPL 许可文本、FFmpeg 源码获取方式与第三方库许可信息；`scripts/` 只负责生成合规二进制与门禁，不代替许可证义务。
+- 中文字体显示与像素级视觉回归仍需在目标系统目视确认（已做无窗口六态渲染与 macOS 真实窗口启动冒烟）。
+
 ## [v1.1.0] - 2026-11-14
 
 界面重设计落地版。上一版留下的「界面稿未合入 GUI、解包阻塞窗口、设置不持久化、界面未中文化」四项全部完成，并顺手清理后台文案与代码质量问题。

@@ -208,7 +208,7 @@ fn show_log(ui: &mut egui::Ui, app: &PptxCompressorApp, limit: usize) {
 }
 
 /// 风险告知与环境状态，位于右栏底部。
-pub fn show_notes(ui: &mut egui::Ui, app: &PptxCompressorApp) {
+pub fn show_notes(ui: &mut egui::Ui, app: &mut PptxCompressorApp) {
     components::notice(
         ui,
         "含宏（.pptm）或数字签名的演示文稿，压缩后签名会失效；建议先另存副本。",
@@ -218,45 +218,96 @@ pub fn show_notes(ui: &mut egui::Ui, app: &PptxCompressorApp) {
     ui.add_space(10.0);
 
     if app.ffmpeg_available {
-        let source = ffmpeg_source(app.ffmpeg_path.as_deref());
+        let source = app
+            .ffmpeg_source
+            .map(|s| s.label())
+            .unwrap_or("未知来源");
+        let license = app
+            .ffmpeg_license
+            .map(|l| l.label())
+            .unwrap_or("许可未识别");
+        let path = app.ffmpeg_path.clone().unwrap_or_default();
+        let has_override = app.ffmpeg_override.is_some();
+
         ui.horizontal(|ui| {
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
             ui.painter().circle_filled(rect.center(), 3.5, GREEN);
             ui.add_space(5.0);
             ui.label(
-                egui::RichText::new(format!(
-                    "FFmpeg 已就绪（{}）· 输出前会回读校验压缩包完整性",
-                    source
-                ))
-                .color(MUTED)
-                .size(10.0),
+                egui::RichText::new(format!("FFmpeg 已就绪（{source} · {license}）"))
+                    .color(MUTED)
+                    .size(10.0),
             );
+        });
+        ui.add_space(3.0);
+        ui.label(
+            egui::RichText::new(shorten_path(&path))
+                .color(MUTED)
+                .size(9.5),
+        );
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if components::text_link(ui, "重新检测").clicked() {
+                app.refresh_ffmpeg();
+            }
+            ui.add_space(12.0);
+            if components::text_link(ui, "更换 FFmpeg…").clicked() {
+                app.pick_ffmpeg();
+            }
+            if has_override {
+                ui.add_space(12.0);
+                if components::text_link(ui, "恢复自动查找").clicked() {
+                    app.clear_ffmpeg_override();
+                }
+            }
         });
     } else {
         components::notice(
             ui,
-            "未找到 FFmpeg，视频压缩将被跳过。可安装系统 FFmpeg 后重启应用，或使用随包版本。",
+            "未找到 FFmpeg：图片、GIF 与 XML 清理照常工作，视频项会被明确跳过。",
             RED,
             RED_SOFT,
         );
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(
+                "请安装系统 FFmpeg（macOS: brew install ffmpeg；Windows: 官方或 LGPL 构建），\
+                 或点击下方按钮直接选择本机可执行文件。",
+            )
+            .color(TEXT_2)
+            .size(10.0),
+        );
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if components::small_button(ui, "选择本机 FFmpeg…").clicked() {
+                app.pick_ffmpeg();
+            }
+            ui.add_space(10.0);
+            if components::text_link(ui, "重新检测").clicked() {
+                app.refresh_ffmpeg();
+            }
+        });
     }
 
     ui.add_space(8.0);
     ui.label(
         egui::RichText::new(
-            "随包 FFmpeg 为 GPL + nonfree 构建，仅供个人使用；再分发请替换为 LGPL 合规构建（见 THIRD_PARTY_NOTICES.md）。",
+            "v1.2.0 起不再随包分发 FFmpeg：用户自备二进制的许可证由使用者自行负责，\
+             项目源码仍为 MIT（详见 THIRD_PARTY_NOTICES.md）。",
         )
         .color(MUTED)
         .size(9.5),
     );
 }
 
-fn ffmpeg_source(path: Option<&str>) -> &'static str {
-    match path {
-        Some(p) if p == "ffmpeg" || p == "ffmpeg.exe" => "系统 PATH",
-        Some(p) if p.contains("pptx-compressor") => "用户数据目录",
-        Some(_) => "随包提供",
-        None => "未知",
+/// 长路径在窄栏里截断中间，避免把布局撑破。
+fn shorten_path(path: &str) -> String {
+    let chars: Vec<char> = path.chars().collect();
+    if chars.len() <= 64 {
+        return path.to_owned();
     }
+    let head: String = chars[..24].iter().collect();
+    let tail: String = chars[chars.len() - 34..].iter().collect();
+    format!("{head}…{tail}")
 }

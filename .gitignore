@@ -14,3 +14,9 @@ target/
 
 # Generated files
 *.pptx.cpgz
+
+# Compliance: FFmpeg binaries are intentionally NOT redistributed.
+# A compliant build may be placed here by scripts/fetch-ffmpeg-lgpl.sh
+# or scripts/build-ffmpeg-lgpl-macos.sh, then passed via env vars.
+build/
+resources/ffmpeg/

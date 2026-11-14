@@ -48,6 +48,7 @@ fn persisted_preferences_roundtrip() {
     state.settings.apply_preset(Preset::Small);
     state.show_advanced = true;
     state.output_dir = Some(std::path::PathBuf::from("/tmp/pptx-out"));
+    state.ffmpeg_override = Some("/usr/local/bin/ffmpeg".into());
 
     let raw = serde_json::to_string(&state).expect("serialize");
     let restored: PersistedState = serde_json::from_str(&raw).expect("deserialize");
@@ -59,6 +60,7 @@ fn persisted_preferences_roundtrip() {
         restored.output_dir,
         Some(std::path::PathBuf::from("/tmp/pptx-out"))
     );
+    assert_eq!(restored.ffmpeg_override.as_deref(), Some("/usr/local/bin/ffmpeg"));
 }
 
 #[test]
@@ -69,6 +71,7 @@ fn legacy_preference_file_still_loads() {
     assert!(restored.show_advanced);
     assert_eq!(restored.settings.preset(), Preset::Balanced);
     assert!(restored.output_dir.is_none());
+    assert!(restored.ffmpeg_override.is_none());
 }
 
 #[test]

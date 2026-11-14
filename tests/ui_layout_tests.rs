@@ -64,7 +64,7 @@ fn every_panel_renders_in_all_six_states() {
                 settings::show(ui, &mut app);
                 media_list::show(ui, &mut app);
                 progress::show(ui, &mut app);
-                progress::show_notes(ui, &app);
+                progress::show_notes(ui, &mut app);
                 file_panel::show(ui, &mut app);
             });
         });
@@ -95,7 +95,7 @@ fn empty_media_list_and_advanced_panel_render() {
             settings::show(ui, &mut app);
             media_list::show(ui, &mut app);
             progress::show(ui, &mut app);
-            progress::show_notes(ui, &app);
+            progress::show_notes(ui, &mut app);
             file_panel::show(ui, &mut app);
         });
     });

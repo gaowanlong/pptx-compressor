@@ -6,7 +6,7 @@
 
 use crate::core::{CompressMessage, CompressionSettings, MediaInfo};
 use crate::ui::{components, file_panel, media_list, progress, settings};
-use crate::utils::ffmpeg;
+use crate::utils::ffmpeg::{self, FfmpegSource, LicenseClass};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,6 +40,8 @@ pub struct PersistedState {
     pub settings: CompressionSettings,
     pub output_dir: Option<PathBuf>,
     pub show_advanced: bool,
+    /// 用户手动指定的 FFmpeg 可执行文件；留空则自动查找。
+    pub ffmpeg_override: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +104,12 @@ pub struct PptxCompressorApp {
     /// 活动日志：非致命错误、跳过原因、清理告警都在这里可见。
     pub activity_log: Vec<String>,
     pub ffmpeg_available: bool,
+    /// 实际使用的 FFmpeg 命令（自动查找或用户指定）。
     pub ffmpeg_path: Option<String>,
+    pub ffmpeg_source: Option<FfmpegSource>,
+    pub ffmpeg_license: Option<LicenseClass>,
+    /// 持久化的用户手动指定路径。
+    pub ffmpeg_override: Option<String>,
     pub show_advanced: bool,
     pub show_only_compressible: bool,
     pub output_path: Option<PathBuf>,
@@ -111,7 +118,7 @@ pub struct PptxCompressorApp {
 
 impl Default for PptxCompressorApp {
     fn default() -> Self {
-        let ffmpeg_path = ffmpeg::find_ffmpeg();
+        let located = ffmpeg::locate_current();
         Self {
             state: AppState::Idle,
             input_files: Vec::new(),
@@ -130,8 +137,11 @@ impl Default for PptxCompressorApp {
             result_original: 0,
             result_compressed: 0,
             activity_log: Vec::new(),
-            ffmpeg_available: ffmpeg_path.is_some(),
-            ffmpeg_path,
+            ffmpeg_available: located.is_some(),
+            ffmpeg_path: located.as_ref().map(|f| f.command.clone()),
+            ffmpeg_source: located.as_ref().map(|f| f.source),
+            ffmpeg_license: located.as_ref().map(|f| f.license),
+            ffmpeg_override: None,
             show_advanced: false,
             show_only_compressible: false,
             output_path: None,
@@ -154,12 +164,55 @@ impl PptxCompressorApp {
                         app.settings = saved.settings;
                         app.output_dir = saved.output_dir;
                         app.show_advanced = saved.show_advanced;
+                        app.ffmpeg_override = saved.ffmpeg_override;
                     }
                     Err(e) => eprintln!("忽略损坏的偏好设置：{}", e),
                 }
             }
         }
+        app.refresh_ffmpeg();
         app
+    }
+
+    /// 重新定位 FFmpeg，并把结果同步给后台压缩线程与界面。
+    pub fn refresh_ffmpeg(&mut self) {
+        ffmpeg::set_preferred(self.ffmpeg_override.clone());
+        let located = ffmpeg::locate_current();
+        self.ffmpeg_available = located.is_some();
+        self.ffmpeg_path = located.as_ref().map(|f| f.command.clone());
+        self.ffmpeg_source = located.as_ref().map(|f| f.source);
+        self.ffmpeg_license = located.as_ref().map(|f| f.license);
+    }
+
+    /// 让用户从本机选择一个 FFmpeg 可执行文件，校验通过后持久化。
+    pub fn pick_ffmpeg(&mut self) {
+        #[cfg(target_os = "windows")]
+        let dialog = rfd::FileDialog::new()
+            .set_title("选择 FFmpeg 可执行文件")
+            .add_filter("FFmpeg", &["exe"]);
+        #[cfg(not(target_os = "windows"))]
+        let dialog = rfd::FileDialog::new().set_title("选择 FFmpeg 可执行文件");
+        let Some(path) = dialog.pick_file() else {
+            return;
+        };
+        match ffmpeg::validate_path(&path) {
+            Ok(info) => {
+                self.ffmpeg_override = Some(info.command);
+                self.refresh_ffmpeg();
+                self.log(format!(
+                    "已指定 FFmpeg：{}",
+                    self.ffmpeg_path.as_deref().unwrap_or("（未知）")
+                ));
+            }
+            Err(e) => self.log(format!("选择 FFmpeg 失败：{}", e)),
+        }
+    }
+
+    /// 清除手动指定，回到自动查找。
+    pub fn clear_ffmpeg_override(&mut self) {
+        self.ffmpeg_override = None;
+        self.refresh_ffmpeg();
+        self.log("已恢复自动查找 FFmpeg");
     }
 
     pub fn progress_pct(&self) -> u8 {
@@ -402,6 +455,7 @@ impl eframe::App for PptxCompressorApp {
             settings: self.settings.clone(),
             output_dir: self.output_dir.clone(),
             show_advanced: self.show_advanced,
+            ffmpeg_override: self.ffmpeg_override.clone(),
         };
         if let Ok(raw) = serde_json::to_string(&state) {
             storage.set_string(STORAGE_KEY, raw);

@@ -1,42 +1,43 @@
 # 第三方组件声明
 
-本项目的**源码**以 MIT 许可证发布（见 `LICENSE`）。发布包中另包含以下第三方二进制，它们不受 MIT 许可证覆盖。
+本项目的**源码**以 MIT 许可证发布（见 `LICENSE`）。自 **v1.2.0** 起，发布包**不包含任何 FFmpeg 二进制**，也不在运行时下载；包内的可执行文件只有本项目自身编译产物。
 
 ## FFmpeg
 
-- 版本：FFmpeg 6.0
-- 随包路径：
-  - macOS：`PPTX Compressor.app/Contents/Resources/ffmpeg`
-  - Windows：`ffmpeg.exe`
-- 用途：把 PPTX 内嵌视频重编码为 H.264 / AAC。
-- 构建配置（由 `ffmpeg -version` 读取）：
+### 当前状态（v1.2.0 及以后）
 
-  ```
-  --enable-gpl --enable-version3 --enable-nonfree --enable-libx264
-  --enable-libx265 --enable-libvpx --enable-libaom --enable-libass ...
-  ```
+- 用途：把 PPTX 内嵌视频重编码为 H.264 / AAC（可选功能）。
+- 提供方：**使用者本机**。程序按「手动指定路径 → 随包副本（若维护者用合规构建打包）→ 用户数据目录 → 系统 PATH」顺序查找；找不到时视频项明确报错，图片 / GIF / XML 压缩仍正常工作。
+- 许可证：由使用者所安装的构建决定，其使用与合规责任由使用者自行承担。程序会读取 `ffmpeg -version` 的 `configuration` 行，在界面标注 LGPL / GPL / nonfree / 未识别，但**运行时不做拦截**（个人自用 GPL 构建不构成再分发）。
+- 编码器要求：需带 `libx264` 或 `libopenh264`；程序自动选择，前者用 CRF 质量模型，后者用码率模型。
+- 安装与指定方式：[FFMPEG_SETUP.md](FFMPEG_SETUP.md)。
 
-- 许可证：因启用 `--enable-gpl` 与 `--enable-version3`，该二进制按 **GPLv3** 授权；同时启用了 `--enable-nonfree`，FFmpeg 官方明确说明 nonfree 构建**不可再分发**。
-- 来源：macOS 构建来自 evermeet.cx 静态包，Windows 构建来自 gyan.dev essentials 包。
-- 源码与许可证文本：<https://ffmpeg.org/download.html> 、<https://www.gnu.org/licenses/gpl-3.0.html>
+### 历史版本（v1.0.0 / v1.0.1 / v1.1.0）的风险说明
 
-### 分发风险与建议
+这三个版本的发布包曾附带以下二进制，**现已从仓库删除**：
 
-GPLv3 要求随二进制提供对应源码或有效的源码获取方式，且 nonfree 构建本身不允许再分发。当前发布包附带本声明并不等于已完全满足合规要求。**建议改用仅启用 LGPL 组件的 FFmpeg 构建**（移除 `--enable-gpl` / `--enable-nonfree` 与 x264，改用 libopenh264 等 LGPL 兼容编码器），或改为运行时由用户自行提供 FFmpeg。
+| 平台 | 版本 / 来源 | 构建配置 |
+| --- | --- | --- |
+| macOS | FFmpeg 6.0，evermeet.cx 静态包 | `--enable-gpl --enable-version3 --enable-nonfree --enable-libx264 ...` |
+| Windows | gyan.dev essentials 包 | `--enable-gpl --enable-version3 --enable-libx264 ...` |
 
-### v1.1.0 起：替换随包 FFmpeg 的方法
+因启用 `--enable-gpl` / `--enable-version3`，这些二进制按 GPLv2+ / GPLv3+ 授权；macOS 构建还启用了 `--enable-nonfree`，FFmpeg 官方明确说明 **nonfree 构建不可再分发**。GPL 同时要求随二进制提供对应源码或有效的源码获取方式。把这类二进制与 MIT 源码捆绑分发存在明确的法律风险，因此本版移除了它们。
 
-`package.sh` 支持通过环境变量指定自备的 FFmpeg 二进制，打包时会覆盖默认文件，无需改动仓库内容：
+> **待办（维护者）**：v1.0.0 / v1.0.1 / v1.1.0 已发布的 Release 资产仍包含上述二进制。清理它们属于对外部已发布内容的操作，本版未擅自改动，请在 GitHub Release 页面手动删除对应附件，或用合规构建重新打包后替换。
 
-```bash
-FFMPEG_MACOS=/path/to/lgpl-ffmpeg ./package.sh macos
-FFMPEG_WINDOWS=/path/to/lgpl-ffmpeg.exe ./package.sh windows
-```
+参考：<https://ffmpeg.org/legal.html> 、<https://ffmpeg.org/download.html> 、<https://www.gnu.org/licenses/gpl-3.0.html>
 
-替换后请同步更新本文件的「版本 / 构建配置 / 许可证 / 来源」四栏，并在应用界面右下角的合规提示中说明新的授权情况。程序运行时按「随包二进制 → 开发资源目录 → 用户数据目录 → 系统 PATH」的顺序查找 FFmpeg，因此用户也可以直接安装系统 FFmpeg 而不使用随包版本。
+### 维护者：重新内置合规 FFmpeg 的条件
 
-注意：**默认仓库内的二进制仍是 GPL + nonfree 构建，本版只是提供了可替换路径，并未完成许可证整改**。在替换之前，使用者与再分发者需自行评估并承担相应的许可证义务；该项也已记录在 `CHANGELOG.md` 的「已知限制」中。
+`package.sh` 默认不内置 FFmpeg。只有在显式设置 `FFMPEG_MACOS` / `FFMPEG_WINDOWS` 时才会打包，且必须通过 `scripts/ffmpeg-license-check.sh` 门禁：拒绝 `--enable-gpl` / `--enable-version3` / `--enable-nonfree`，也拒绝读不到构建配置的二进制。
+
+可用的合规构建来源：
+
+- Windows：[BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds/releases/tag/latest) 的 `-win64-lgpl` 静态构建（不含 libx264 / libx265），由 `scripts/fetch-ffmpeg-lgpl.sh` 下载并校验。
+- macOS：没有可直接再分发的 LGPL 预编译版本（evermeet.cx 是 GPL+nonfree，Homebrew 默认也是 GPLv3）。`scripts/build-ffmpeg-lgpl-macos.sh` 提供从源码构建的复现路径，用 BSD 许可的 [libopenh264](https://github.com/cisco/openh264) 替代 GPL 的 libx264。
+
+若决定随包分发 LGPL 二进制，还需自行履行 LGPL 义务：**附上对应版本的 LGPL / 相关许可文本、FFmpeg 与所用第三方库的源码或有效获取方式、构建配置说明**，并把本文件的「版本 / 构建配置 / 许可证 / 来源」四栏更新为实际使用的构建。脚本只负责生成合规二进制与门禁，不代替这些义务。
 
 ## 其他 Rust 依赖
 
-所有 Rust crate 通过 Cargo 从 crates.io 获取，各自的许可证见 `Cargo.lock` 对应仓库；主要 GUI 依赖 egui / eframe 为 MIT / Apache-2.0 双许可。
+所有 Rust crate 通过 Cargo 从 crates.io 获取，各自的许可证见 `Cargo.lock` 对应仓库；主要依赖包括 egui / eframe（MIT / Apache-2.0 双许可）、`image`、`gif`、`zip`、`rayon`、`serde` 等。发布包仅静态链接这些 crate 的编译产物。
