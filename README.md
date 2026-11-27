@@ -1,13 +1,16 @@
 # PPTX 压缩器
 
-![Version](https://img.shields.io/badge/version-v1.2.5-blue.svg)
+![Version](https://img.shields.io/badge/version-v1.3.0-blue.svg)
 ![macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)
 ![Windows](https://img.shields.io/badge/platform-Windows-0078d7.svg)
+![HarmonyOS PC](https://img.shields.io/badge/platform-鸿蒙电脑-ff4d4f.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-一个跨平台的 PowerPoint（PPTX）压缩工具：把 PPTX 当 ZIP 解开，重新编码内嵌的图片、GIF 与视频，再重新打包。提供 macOS 原生 `.app` 与 Windows 原生 exe，纯 Rust + egui 实现，界面为全中文。
+一个跨平台的 PowerPoint（PPTX）压缩工具：把 PPTX 当 ZIP 解开，重新编码内嵌的图片、GIF 与视频，再重新打包。提供 macOS 原生 `.app`、Windows 原生 exe 与**鸿蒙电脑原生 HAP**，三者共用同一套 Rust 压缩内核、同一份设置与事件数据格式。桌面版为纯 Rust + egui，鸿蒙版为 ArkTS/ArkUI 外壳 + N-API 链接的 Rust 静态库，界面均为全中文。
 
-> **v1.2.0 重要变更**：发布包**不再内置 FFmpeg**，也不会自动下载。图片 / GIF / XML 压缩不受影响；视频压缩需要你本机提供一个 FFmpeg。原因与做法见 [FFMPEG_SETUP.md](FFMPEG_SETUP.md)。
+> **v1.3.0 新增鸿蒙电脑版本**：`ohos/` 是完整的 HarmonyOS HAP 工程。构建、签名、安装、启动与验证要点见 [HARMONYOS_PC.md](HARMONYOS_PC.md)。
+
+> **v1.2.0 重要变更**：发布包**不再内置 FFmpeg**，也不会自动下载。图片 / GIF / XML 压缩不受影响；视频压缩需要你本机提供一个 FFmpeg。原因与做法见 [FFMPEG_SETUP.md](FFMPEG_SETUP.md)。鸿蒙 HAP 沙箱内无法执行外部 FFmpeg，视频会保持原样并在日志中说明，其余能力不受影响。
 
 ## 功能
 
@@ -21,7 +24,7 @@
   - PNG：Best 级别重编码 + 自适应滤波
   - GIF：可调帧率、调色板优化，保留原循环次数、透明索引与帧处置方式
   - 所有媒体统一遵循「只有更小才替换」，变大或失败时自动保留原文件
-  - 图片与 GIF 用最多 4 线程并行重编码，视频转码保持串行以免内存爆炸
+  - 图片与 GIF 用最多 4 线程并行重编码（鸿蒙电脑为 2 线程），视频转码保持串行以免内存爆炸
 - **元数据保真**（v1.2.3 新增）
   - JPEG：EXIF（含方向标签）、ICC 色彩配置、XMP 与 IPTC 段原样写回重编码结果，带方向的照片不会被转歪、带色彩配置的图片不偏色
   - PNG：文本块（`tEXt` / `zTXt` / `iTXt`）、色彩块（`sRGB` / `gAMA` / `cHRM` / `iCCP`）、`eXIf`、`tIME`、`pHYs` 原样保留
@@ -93,8 +96,22 @@
 
 输出默认写到源文件同目录（也可在「高级设置」里指定统一输出目录），命名为 `<原名>_compressed.pptx`；若已存在则改为 `_compressed_2.pptx`，以此类推，不同目录下的同名源文件也不会互相覆盖。原文件永远不会被修改。压缩参数、输出目录与 FFmpeg 路径由 eframe 写入各平台标准应用数据目录，下次启动自动恢复。
 
+## 鸿蒙电脑版本（v1.3.0 新增）
+
+`ohos/` 是完整的 HarmonyOS Stage 模型工程，目标是鸿蒙电脑（`2in1`）、平板与手机的响应式窗口。它**复用同一套 Rust 压缩内核**：内核交叉编译为 `aarch64-unknown-linux-ohos` / `x86_64-unknown-linux-ohos` 静态库，由 C++ N-API 挂到 `libentry.so`，ArkTS 界面通过统一的 JSON 事件协议调用。设置、事件语义、输出命名与 PPTX 数据格式与桌面版完全一致。
+
+```bash
+rustup target add aarch64-unknown-linux-ohos x86_64-unknown-linux-ohos
+./scripts/build-ohos.sh     # 双 ABI Rust 静态库
+./scripts/build-hap.sh      # HAP（未签名）
+./scripts/verify-ohos.sh    # 产物自检
+```
+
+真机安装需在 DevEco Studio 配置签名后用 `hdc install` / `hdc shell aa start -b com.gaowanlong.pptxcompressor -a EntryAbility` 启动。**HAP 沙箱内不能执行外部 FFmpeg，视频项会保持原样并给出明确提示**；图片、GIF、XML 清理、OOXML 引用完整性、批量队列、取消与输出安全全部可用。模块调整清单、兼容性处理、安装启动方式与验证要点见 [HARMONYOS_PC.md](HARMONYOS_PC.md)。
+
 ## 版本历史
 
+- **v1.3.0**：新增鸿蒙电脑原生 HAP 版本 —— 拆分平台无关内核与桌面 GUI，新增 JSON 桥接协议、C ABI、ArkTS/ArkUI 双区界面、N-API 层与双 ABI 交叉编译脚本；全量测试与 HAP 构建通过。
 - **v1.2.5**：诚实的体积信息 —— 删除按媒体类型写死的全部启发式压缩比系数，改为基于真实媒体构成展示文稿体积、按类型构成与「可优化空间上限」（变小才替换保证的真实上界）；待处理项不再显示假的「≈ -N%」，压缩参数变化不再让体积数字跳动；新增 23 项回归测试，含从 egui 一帧输出提取文本断言界面不再出现「预计可节省」。
 - **v1.2.4**：OOXML 引用完整性 —— 媒体改名改为按关系 / 内容类型标签精确定位（不再全局子串替换、不再假设 `/ppt/media/` 前缀），notesSlides / 母版 / 主题 / 自定义目录引用全量同步；打包前清理所有悬空关系与失效内容类型声明；非 `ppt/media` 路径的媒体也参与压缩并统一 Stored；新增 18 项回归测试。
 - **v1.2.3**：元数据保真 —— JPEG 的 EXIF 方向 / ICC、PNG 的文本与色彩块、GIF 的循环次数与透明索引在重编码后原样保留，避免图片旋转、偏色、循环次数被改写与透明区域串色；新增 26 项回归测试。
@@ -114,7 +131,7 @@
 - 候选文件（含搬运回来的元数据）比原件大时会走「变小才替换」，此时保留原件，元数据自然完整。
 - 引用完整性只校验 OPC 关系与 `[Content_Types].xml` 声明，不校验幻灯片 XML 正文里的 `r:embed` / `r:id` 是否指向存在的 `rId`（源包自带的这类损坏不会被自动修复）；改名后多余的旧 `<Default>` 扩展声明按设计保留。
 - 本版有意不再预测压缩结果：可优化空间上限是真实上界（通常明显大于最终节省），确切数字在压缩完成后显示；构成模型按解压后媒体体积与 ZIP 包体积分别展示，不计算口径不同的「占文稿百分比」。
-- 视频压缩依赖用户自备 FFmpeg；本机未安装时，真实转码端到端用例会在测试中明确跳过，视频链路由 mock 用例与参数单测覆盖。
+- 视频压缩依赖用户自备 FFmpeg；本机未安装时，真实转码端到端用例会在测试中明确跳过，视频链路由 mock 用例与参数单测覆盖。**鸿蒙电脑 HAP 沙箱内无法执行外部 FFmpeg，视频项保持原样并在日志提示**，其余压缩能力完整可用；首轮 HAP 为未签名包，需 DevEco Studio 配置签名后才能安装到真机。
 - **v1.0.0 / v1.0.1 / v1.1.0 的历史 Release 资产仍附带 GPL+nonfree FFmpeg**，需维护者在 GitHub 手动删除对应附件；当前仓库与 v1.2.0 起的新包已不含该二进制。
 - 已完成无窗口六态 / 批量队列四态布局渲染冒烟与 macOS 真实窗口启动冒烟；中文字体显示与像素级视觉回归仍需在目标系统目视确认。
 
@@ -130,10 +147,11 @@
 
 ```bash
 cargo check --all-targets
-cargo test                       # 125 项：体积构成、OOXML 引用、元数据、队列模型、批量端到端、ZIP 往返、输入检测、mock FFmpeg、UI 冒烟
+cargo test --all-features        # 131 项通过 + 1 项按设计跳过，含桥接协议与 C ABI 测试；桌面原有测试全部保持通过
 cargo test -- --include-ignored  # 装了 FFmpeg 时额外跑真实转码端到端用例
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-features --all-targets -- -D warnings
 cargo build --release            # 产物：target/release/pptx-compressor
+./scripts/verify-ohos.sh         # 鸿蒙版产物自检
 ```
 
 ### 打包
@@ -166,7 +184,8 @@ cargo xwin build --release --target x86_64-pc-windows-msvc
 
 ## 技术栈
 
-- **GUI**：eframe + egui（纯 Rust 即时模式 GUI），`persistence` 保存偏好
+- **GUI（桌面）**：eframe + egui（纯 Rust 即时模式 GUI），`persistence` 保存偏好
+- **GUI（鸿蒙电脑）**：ArkTS + ArkUI 声明式界面，通过 C++ N-API 调用同一 Rust 内核（`libentry.so`）；`@ohos.data.preferences` 保存偏好
 - **图片 / GIF**：`image` crate、`gif` crate
 - **视频**：用户自备的 FFmpeg 子进程（自动选择 libx264 CRF 或 libopenh264 码率模型）
 - **并行**：`rayon` 受限线程池（最多 4 线程）

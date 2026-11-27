@@ -9,7 +9,7 @@ use crate::core::queue::{self, BatchQueue};
 use crate::core::{CompressMessage, CompressionSettings, MediaInfo};
 use crate::ui::{components, file_panel, media_list, progress, settings};
 use crate::utils::ffmpeg::{self, FfmpegSource, LicenseClass};
-use serde::{Deserialize, Serialize};
+pub use crate::core::state::{PersistedState, STORAGE_KEY};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -33,18 +33,8 @@ pub const AMBER_SOFT: egui::Color32 = egui::Color32::from_rgb(255, 246, 229);
 pub const RED: egui::Color32 = egui::Color32::from_rgb(214, 69, 69);
 pub const RED_SOFT: egui::Color32 = egui::Color32::from_rgb(253, 238, 238);
 
-const STORAGE_KEY: &str = "pptx-compressor.state.v1";
-
-/// 退出时写入磁盘的用户偏好。新增字段会走 `serde(default)`，旧文件仍可读。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PersistedState {
-    pub settings: CompressionSettings,
-    pub output_dir: Option<PathBuf>,
-    pub show_advanced: bool,
-    /// 用户手动指定的 FFmpeg 可执行文件；留空则自动查找。
-    pub ffmpeg_override: Option<String>,
-}
+// `PersistedState` / `STORAGE_KEY` 已上移到 `core::state`，
+// 让桌面版与鸿蒙版共用完全一致的持久化 JSON 结构。
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {

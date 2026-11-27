@@ -1,0 +1,9 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "pptx-compressor-ohos",
+  "description": "HarmonyOS PC build of PPTX Compressor",
+  "dependencies": {
+    "libentry.so": "file:./entry/src/main/cpp/types/libentry"
+  },
+  "devDependencies": {}
+}

@@ -40,4 +40,10 @@
 
 ## 其他 Rust 依赖
 
-所有 Rust crate 通过 Cargo 从 crates.io 获取，各自的许可证见 `Cargo.lock` 对应仓库；主要依赖包括 egui / eframe（MIT / Apache-2.0 双许可）、`image`、`gif`、`zip`、`rayon`、`serde` 等。发布包仅静态链接这些 crate 的编译产物。
+所有 Rust crate 通过 Cargo 从 crates.io 获取，各自的许可证见 `Cargo.lock` 对应仓库；主要依赖包括 egui / eframe（MIT / Apache-2.0 双许可）、`image`、`gif`、`zip`、`rayon`、`serde` 等。发布包仅静态链接这些 crate 的编译产物。`image` 在 v1.3.0 起关闭默认 features，只编译 JPEG / PNG 解码器，不再引入 AVIF / EXR / TIFF 等用不到的编码器。
+
+## 鸿蒙电脑（HAP）版本
+
+鸿蒙版复用上述同一批 Rust crate，交叉编译为 `libpptx_compressor.a` 后由 CMake 链接进 `libentry.so`；链接的系统库为 OHOS NDK 自带的 `libace_napi.z.so`、`libhilog_ndk.z.so`、`libuv.so`、`z`，均来自 HarmonyOS SDK，其许可随 DevEco Studio 的 SDK NOTICE 一并提供。
+
+HAP 内**不含任何 FFmpeg 二进制、也不含 GPL / nonfree 组件**，延续 v1.2.0 起的合规策略。ArkTS 侧仅使用 HarmonyOS SDK 的公开 Kit（AbilityKit、ArkData、CoreFileKit、ArkUI），不引入第三方前端依赖。

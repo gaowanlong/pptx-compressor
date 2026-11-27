@@ -2,6 +2,56 @@
 
 本项目所有值得注意的变更都记录在这里，版本号遵循语义化版本。Release 说明直接取自对应章节。
 
+## [v1.3.0] - 2026-11-27
+
+鸿蒙电脑版本。在保持桌面版功能、交互逻辑与数据格式完全不变的前提下，新增 HarmonyOS PC（2in1）原生 HAP 版本。核心结论：鸿蒙电脑的原生应用是 HAP 包，没有 winit/OpenGL 后端，egui 界面无法直接交叉编译过去；但压缩内核（`zip` / `image` / `gif` / `rayon` / `serde`，全部纯 Rust、无 C 依赖）可以编译为 OHOS `staticlib`，通过 C++ N-API 挂到 `libentry.so` 供 ArkTS 调用。因此采用「同一内核 + 双 UI 壳 + 同一 JSON 协议」：桌面版只是换了一层渲染，压缩行为、输出 PPTX、设置结构、事件语义、输出命名规则一字不改。按 minor 版本递增。
+
+### 新增
+
+- **鸿蒙 HAP 工程 `ohos/`**：Stage 模型，`deviceTypes` 含 `2in1` / `tablet` / `phone`；`app.json5`、`module.json5`、`build-profile.json5`（`externalNativeOptions` + `abiFilters`）、`hvigorfile.ts`、`oh-package.json5`、`hvigor-config.json5`、资源与图标齐全，可用 DevEco Studio 直接打开。
+- **ArkTS/ArkUI 双区界面**：`pages/Index.ets` 复刻桌面版六态状态机（等待/解析/就绪/压缩/完成/失败）、左主导区（源文件 + 媒体清单 + 体积构成 + 批量队列）与右从属区（预设 + 滑杆 + 高级项 + 结果 + 活动日志 + 环境说明）、底部固定主操作条；`onAreaChange` 以 900vp 为断点切换宽屏双栏与窄屏纵向堆叠；设计令牌 `common/Theme.ets` 与桌面版一致（纯白底、单一强调色、细分隔线）。
+- **统一 JSON 桥接协议 `src/core/bridge.rs`**：`BridgeRequest`（`inspect` / `compress` / `batch`）、11 类标签化 `BridgeEvent`（inspected / status_update / job_started / job_progress / job_log / job_finished / job_failed / finished / cancelled / fatal）、`Capabilities`、`StartReply`、`PollReply`。`start_job()` 立即返回 jobId，重活在 Rust 后台线程，事件进队列；ArkTS 以 120ms 轮询，取消沿用同一个 `AtomicBool`。N-API 侧只需同步、非阻塞调用，不需要 threadsafe function，UI 线程不做重活。
+- **C ABI 入口 `src/ffi/mod.rs`**：单符号 `pc_call(request, out, cap)` 两遍长度协议（避免跨语言 malloc/free），`pc_abi_version()` 供加载期握手；非法 JSON、未知 op、空指针、缓冲不足均返回结构化错误，`catch_unwind` 拦截 panic 不跨 FFI 展开。
+- **平台抽象层 `src/core/platform.rs`**：`is_harmonyos()`（`target_env="ohos"` 判定）、`video_transcode_available()`、`max_image_threads()`（鸿蒙 2 / 桌面 4）、`init_sandbox()`、`tempdir()`、`data_dir()`。
+- **共享状态模型 `src/core/state.rs`**：`PersistedState` 从 `app.rs` 上移，桌面版 eframe storage 与鸿蒙版 `@ohos.data.preferences` 读写**同一个 JSON 结构、同一个键** `pptx-compressor.state.v1`；首次启动由 Rust `default_settings` 提供权威默认值，避免两端漂移。
+- **N-API 层 `ohos/entry/src/main/cpp/`**：`CMakeLists.txt` 按 `OHOS_ARCH` 链接 `libpptx_compressor.a`，`napi_init.cpp` 导出 `call` / `abiVersion`，`pptx_bridge.h` 声明 C ABI，`types/libentry/index.d.ts` 提供 ArkTS 类型。
+- **沙箱文件桥 `model/SandboxFiles.ets`**：`DocumentViewPicker` 的 content URI → 复制到 `filesDir/input/` → Rust 处理 → 结果落 `filesDir/output/` → `DocumentSaveOptions` 导出用户目录；单个文件复制失败不影响其余文件。
+- **构建与自检脚本**：`scripts/build-ohos.sh`（双 ABI 交叉编译，自动探测 OHOS NDK 与 clang 链接器）、`scripts/build-hap.sh`（自动配置 hvigor / ohpm / OHOS SDK / JBR，`oh_modules` 已存在时跳过 install）、`scripts/verify-ohos.sh`（协议版本、偏好键、设备类型、静态库、HAP 内容、导出符号、测试与 clippy 自检）。
+- **回归测试**：`tests/bridge_tests.rs`（在主机模拟鸿蒙沙箱跑通 inspect → compress → batch 全链路，验证视频降级、输出 PPTX 可回读、批量汇总、旧偏好兼容与 JSON 形状）、`tests/ffi_tests.rs`（C ABI 两遍协议、错误注入、init 能力查询）。共新增 7 项测试。
+
+### 变更
+
+- `Cargo.toml`：新增 `desktop`（默认）/ `ohos` / `ffi` feature；`eframe`、`egui`、`rfd` 改为可选依赖；`[lib] crate-type = ["rlib","staticlib"]`；`[[bin]]` 增加 `required-features = ["desktop"]`；`image` 关闭默认 features、只保留 `jpeg` / `png`，去掉 AVIF/EXR/TIFF 等用不到的编码器以缩小 HAP 原生库。
+- `src/lib.rs` / `src/main.rs`：`app`、`ui` 只在 `desktop` feature 下编译；桌面 Linux 字体与路径分支改为 `all(target_os="linux", not(target_env="ohos"))`；`app.rs` 改为 `pub use core::state::PersistedState`，原有 UI 测试导入不受影响。
+- `src/core/pipeline.rs` / `batch.rs`：临时目录改走 `platform::tempdir()`，线程池上限改走 `platform::max_image_threads()`；视频不可用时的跳过理由写入活动日志。
+- `src/utils/ffmpeg.rs`：`locate()` 在能力关闭时直接返回 `None`，连 `-version` 探测子进程都不发起；随包副本与数据目录候选路径在 ohos 目标下被 cfg 掉，避免依赖不存在的 `HOME` / 可执行文件相邻目录。
+- `src/core/mod.rs`：`MediaType` / `MediaStatus` 增加 serde 派生（snake_case），供 JSON 事件跨端传输；字段与桌面版语义不变。
+- 文档：`README.md` 增加鸿蒙电脑徽章、版本章节与构建说明；新增 `HARMONYOS_PC.md`（模块调整清单、系统兼容性处理、安装与启动、验证要点、已知限制）；`.gitignore` 忽略 HAP 构建产物与静态库。
+
+### 兼容性处理
+
+- OHOS 目标 `target_os="linux"` 但 `target_env="ohos"`、C 运行时为 musl；所有 `cfg(target_os="linux")` 分支显式排除 ohos，避免误套桌面 Linux 约定。
+- HAP 沙箱无可靠 `HOME` / `TMPDIR`：ArkTS 启动时注入 `filesDir` / `cacheDir` / `cacheDir/tmp`，Rust 建目录并让所有 `tempfile` 落在其中。
+- 文档选择器返回 content URI，Rust 只能读普通路径：由 `SandboxFiles` 完成 URI → 沙箱路径 → 导出的转换。
+- 系统字体自带中文（HarmonyOS Sans），不需要桌面版那套 TTC 字体探测；窗口自由缩放走响应式断点。
+- 启动握手校验 `pc_abi_version()` 与 `protocol_version`，内核与 ArkTS 版本错配时直接报错而非静默错解字段。
+
+### 验证
+
+- `cargo test --all-features`：131 项通过、1 项按设计跳过（真实 FFmpeg 转码用例，本机无 FFmpeg），含新增 3 项桥接与 4 项 C ABI 测试，桌面原有测试零改动全绿。
+- `cargo clippy --all-features --all-targets -- -D warnings`：零告警。
+- `aarch64-unknown-linux-ohos` / `x86_64-unknown-linux-ohos` 双 ABI 静态库交叉编译成功（纯 Rust，无 C 依赖链接失败）。
+- HAP：`assembleApp` 构建成功，ArkTS 编译、CMake/Ninja 原生构建、资源打包全通过；包内含 `libs/arm64-v8a/libentry.so` 与 `libs/x86_64/libentry.so`，`llvm-nm` 可见导出符号 `pc_call` / `pc_abi_version`。
+- 端到端（模拟鸿蒙沙箱）：inspect → compress → batch 全链路通过，视频被禁用并给出告警、输出 PPTX 可回读、批量 2/2 成功、汇总数据正确；错误注入不 panic。
+- 真机仍需人工确认：签名安装、窗口断点、文件选择器中文路径、偏好持久化、性能内存与像素级视觉回归。完整清单见 `HARMONYOS_PC.md`。
+
+### 已知限制
+
+- **鸿蒙版视频转码暂不可用**：HAP 沙箱不能执行/再分发外部 FFmpeg，视频项保持原样并显式跳过；图片、GIF、XML 清理、OOXML 引用完整性、批量队列、取消、原子写与回读校验全部正常。可选恢复路径是把 LGPL `libav*` 以动态库链入并改用 C API，届时只需放开 `platform::video_transcode_available()`，协议与界面无需改动。
+- 首轮 HAP 为**未签名包**，CI 只能做产物检查；真机安装与应用市场分发需在 DevEco Studio 配置开发者证书与 Profile。
+- 未接入 Desktop Extension Kit（系统托盘）、跨设备接续与拖放文件入窗等鸿蒙平台增强能力；它们不影响与桌面版一致的既有交互。
+- 本机无鸿蒙 PC 模拟器镜像，界面级视觉回归与真机稳定性需在实际设备上目视/实测确认。
+
 ## [v1.2.5] - 2026-11-15
 
 诚实体积信息版。此前界面在就绪态显示「预计可节省约 16.1 MB（38%）」，媒体清单每一行还显示「≈ -63%」——这些数字来自一组按媒体类型写死的压缩比系数（JPEG `0.15 + 0.55×质量`、PNG `0.55 / 0.88`、GIF `0.40~0.65`、视频 `0.08 + 0.65×质量`，开启缩放再乘 0.7~0.75）。系数与素材内容毫无关系：一张已经压到极致的 JPEG 和一张未压缩的 PNG 套同一个数；分母又只是「媒体体积之和」，不含 XML、字体与包内其他部件，却用「（38%）」的措辞让人以为是整个文稿的节省比例；滑杆一动数字就跳，制造出「调参可精确预测结果」的错觉。更根本的是，流水线遵循「变小才替换」，实际节省恒在 `[0, 可压缩媒体原始体积之和]` 区间内，旧系数给出的数字既不保证是上界、也不保证是下界。本版删除全部启发式系数，改为只报告从真实字节数推得、可验证的媒体构成与可优化空间上界。纯补丁版本，无新依赖、无偏好格式变化、无破坏性变更。

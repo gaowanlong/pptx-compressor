@@ -183,8 +183,12 @@ fn probe_encoders(command: &str) -> EncoderSupport {
 
 /// 打包与开发时可能放置 FFmpeg 的位置（按优先级）。
 fn candidate_paths() -> Vec<(PathBuf, FfmpegSource)> {
+    // 鸿蒙目标下两个候选分支都被 cfg 掉，容器保持不可变即可。
+    #[allow(unused_mut)]
     let mut paths = Vec::new();
 
+    // 随包副本只对桌面安装包有意义；鸿蒙 HAP 沙箱里没有「可执行文件相邻目录」。
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             #[cfg(target_os = "macos")]
@@ -202,6 +206,7 @@ fn candidate_paths() -> Vec<(PathBuf, FfmpegSource)> {
         }
     }
 
+    #[cfg(not(target_env = "ohos"))]
     if let Some(data_dir) = dirs::data_local_dir() {
         paths.push((
             data_dir
@@ -217,6 +222,11 @@ fn candidate_paths() -> Vec<(PathBuf, FfmpegSource)> {
 
 /// 按优先级定位 FFmpeg。`preferred` 是用户在设置里手动指定的路径。
 pub fn locate(preferred: Option<&str>) -> Option<LocatedFfmpeg> {
+    // 鸿蒙 HAP 沙箱不能执行外部二进制；连探测子进程也不发起，
+    // 直接返回「不可用」，由流水线把视频项标记为跳过。
+    if !crate::core::platform::video_transcode_available() {
+        return None;
+    }
     if let Some(raw) = preferred.map(str::trim).filter(|s| !s.is_empty()) {
         let path = Path::new(raw);
         if executable_file(path) && is_runnable_ffmpeg(raw) {

@@ -9,7 +9,7 @@
 //!
 //! 附带好处：取消时解压树尚未被修改，直接丢弃工作目录即可，无需逐文件回滚。
 
-use crate::core::{CompressMessage, CompressionSettings, MediaInfo, MediaStatus, MediaType};
+use crate::core::{self, CompressMessage, CompressionSettings, MediaInfo, MediaStatus, MediaType};
 use crate::handlers::{gif_handler, image, video, xml_clean, CompressCandidate, CANCELLED};
 use rayon::prelude::*;
 use std::fs;
@@ -18,8 +18,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-/// 图片并行上限。解码大图很吃内存，盲目用满所有核心反而更慢。
-const MAX_IMAGE_THREADS: usize = 4;
+/// 图片并行上限。解码大图很吃内存，盲目用满所有核心反而更慢；
+/// 鸿蒙 PC 上进一步降到 2 线程（见 `core::platform`）。
+fn max_image_threads() -> usize {
+    core::platform::max_image_threads()
+}
 
 /// A candidate replaces the original only when it is non-empty and smaller.
 pub fn should_replace(original_size: u64, new_size: u64) -> bool {
@@ -130,7 +133,7 @@ pub fn run_pipeline(
     tx: Sender<CompressMessage>,
     cancel: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let work_dir = tempfile::tempdir().map_err(|e| format!("创建工作目录失败：{}", e))?;
+    let work_dir = core::platform::tempdir().map_err(|e| format!("创建工作目录失败：{}", e))?;
     let tx: SharedSender = Arc::new(Mutex::new(tx));
     let cancel: &AtomicBool = cancel.as_ref();
 
@@ -145,7 +148,14 @@ pub fn run_pipeline(
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            let skip_reason = if m.media_type == MediaType::Video
+            let skip_reason = if !core::platform::video_transcode_available()
+                && m.media_type == MediaType::Video
+            {
+                Some(format!(
+                    "已跳过 {}：当前平台（鸿蒙电脑）不提供 FFmpeg 子进程，视频保持原样",
+                    file_name
+                ))
+            } else if m.media_type == MediaType::Video
                 && !settings.video_convert_to_h264
                 && !is_mp4_container(&original_path)
             {
@@ -215,7 +225,7 @@ pub fn run_pipeline(
         .partition(|w| w.media_type != MediaType::Video);
 
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(MAX_IMAGE_THREADS.min(parallel_items.len().max(1)))
+        .num_threads(max_image_threads().min(parallel_items.len().max(1)))
         .build()
         .map_err(|e| format!("创建压缩线程池失败：{}", e))?;
 

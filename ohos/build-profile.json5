@@ -1,0 +1,37 @@
+{
+  "app": {
+    // 签名材料需在 DevEco Studio 里用华为开发者账号自动生成；
+    // 保持为空可构建未签名 HAP（用于 CI 产物检查），真机安装前必须补签名。
+    "signingConfigs": [],
+    "products": [
+      {
+        "name": "default",
+        "compatibleSdkVersion": "5.0.0(12)",
+        "targetSdkVersion": "5.0.0(12)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      { "name": "debug" },
+      { "name": "release" }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [ "default" ]
+        }
+      ]
+    }
+  ]
+}

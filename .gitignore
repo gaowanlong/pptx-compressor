@@ -23,3 +23,17 @@ resources/ffmpeg/
 
 # WorkBuddy automation memory / logs are workspace-local, not release assets.
 .workbuddy/
+
+# HarmonyOS HAP build artifacts and cross-compiled static libraries.
+# Sources under ohos/ are tracked; the large .a / HAP outputs go to Releases.
+ohos/entry/src/main/cpp/libs/
+ohos/entry/build/
+ohos/entry/oh_modules/
+ohos/build/
+ohos/oh_modules/
+ohos/.hvigor/
+ohos/.cxx/
+.cxx/
+.hvigor/
+.clangd/
+ohos/local.properties

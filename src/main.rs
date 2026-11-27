@@ -144,14 +144,18 @@ fn setup_chinese_font(ctx: &egui::Context) -> bool {
         ("C:\\Windows\\Fonts\\msyhl.ttc", 0),
     ];
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
     let candidates: &[(&str, u32)] = &[
         ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
         ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
         ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", 0),
     ];
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    )))]
     let candidates: &[(&str, u32)] = &[];
 
     let Some((bytes, index)) = candidates

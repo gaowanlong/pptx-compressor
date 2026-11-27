@@ -94,7 +94,7 @@ fn process_one(
         .into_owned();
     let original_size = fs::metadata(input).map(|m| m.len()).unwrap_or(0);
 
-    let temp = match tempfile::tempdir() {
+    let temp = match crate::core::platform::tempdir() {
         Ok(t) => t,
         Err(e) => return OneOutcome::Failed(format!("创建临时目录失败：{e}")),
     };

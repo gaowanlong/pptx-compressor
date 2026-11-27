@@ -1,0 +1,32 @@
+{
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "description": "$string:module_desc",
+    "mainElement": "EntryAbility",
+    // 2in1 即鸿蒙电脑（含 MateBook Pro / 擎云 HM 系列）；
+    // tablet / phone 让同一 HAP 也能在多端兼容运行，界面走响应式断点。
+    "deviceTypes": [ "2in1", "tablet", "phone" ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "pages": "$profile:main_pages",
+    "abilities": [
+      {
+        "name": "EntryAbility",
+        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:app_icon",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:startIcon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        "skills": [
+          {
+            "entities": [ "entity.system.home" ],
+            "actions": [ "action.system.home" ]
+          }
+        ]
+      }
+    ]
+  }
+}

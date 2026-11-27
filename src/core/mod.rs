@@ -4,12 +4,15 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub mod batch;
+pub mod bridge;
 pub mod estimate;
 pub mod extractor;
 pub mod inspection;
 pub mod ooxml;
 pub mod pipeline;
+pub mod platform;
 pub mod queue;
+pub mod state;
 
 /// Convert the 0–100 quality slider into an FFmpeg CRF value.
 /// quality 0 -> CRF 51 (worst), quality 100 -> CRF 0 (lossless).
@@ -18,7 +21,8 @@ pub fn crf_from_quality(quality: u8) -> u8 {
 }
 
 /// Classification of media files found inside a PPTX.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MediaType {
     Jpeg,
     Png,
@@ -86,7 +90,8 @@ pub struct MediaInfo {
     pub status: MediaStatus,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MediaStatus {
     Pending,
     Processing,

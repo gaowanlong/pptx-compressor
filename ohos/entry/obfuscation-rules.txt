@@ -1,0 +1,2 @@
+# 发布构建默认不启用混淆；如需开启请在 entry/build-profile.json5 中配置规则。
+-enable-property-obfuscation

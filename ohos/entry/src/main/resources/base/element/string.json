@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "压缩演示文稿中的图片、GIF 与视频" },
+    { "name": "EntryAbility_desc", "value": "PPTX 压缩器主窗口" },
+    { "name": "EntryAbility_label", "value": "PPTX 压缩器" }
+  ]
+}
